@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -11,6 +10,7 @@ import { Eye, MessageSquare, CheckCircle, AlertCircle } from 'lucide-react';
 import { AuditTable } from '@/components/AuditTable';
 import { Analytics } from '@/components/Analytics';
 import { EvidenceViewer } from '@/components/EvidenceViewer';
+import { ExcelUpload } from '@/components/ExcelUpload';
 import { useAuditStorage } from '@/hooks/useAuditStorage';
 import { useAuth } from '@/hooks/useAuth';
 import { AuditIssue } from '@/types/audit';
@@ -114,8 +114,9 @@ export const AuditorDashboard: React.FC = () => {
       </div>
 
       <Tabs defaultValue="audit-issues" className="space-y-4">
-        <TabsList className="grid w-fit grid-cols-2">
+        <TabsList className="grid w-fit grid-cols-3">
           <TabsTrigger value="audit-issues">Audit Issues</TabsTrigger>
+          <TabsTrigger value="excel-upload">Excel Upload</TabsTrigger>
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
         </TabsList>
 
@@ -126,6 +127,10 @@ export const AuditorDashboard: React.FC = () => {
             title="All Audit Issues"
             actionColumn={getActionColumn}
           />
+        </TabsContent>
+
+        <TabsContent value="excel-upload" className="space-y-4">
+          <ExcelUpload />
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-4">

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,6 +7,7 @@ import { Upload, Download, FileSpreadsheet, AlertCircle } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { useAuditStorage } from '@/hooks/useAuditStorage';
 import { AuditIssue } from '@/types/audit';
+import * as XLSX from 'xlsx';
 
 export const ExcelUpload: React.FC = () => {
   const { addAuditIssue } = useAuditStorage();
@@ -72,6 +74,84 @@ export const ExcelUpload: React.FC = () => {
     return result;
   };
 
+  const parseExcelFile = async (file: File): Promise<{ headers: string[], dataRows: string[][] }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          
+          // Convert to JSON array
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+          
+          if (jsonData.length < 2) {
+            throw new Error('File must contain at least a header row and one data row');
+          }
+
+          const headers = (jsonData[0] as string[]).map(h => String(h).trim());
+          const dataRows = jsonData.slice(1).map(row => 
+            (row as any[]).map(cell => String(cell || '').trim())
+          );
+
+          console.log('Excel parsed headers:', headers);
+          console.log('Excel parsed data rows:', dataRows.length);
+
+          resolve({ headers, dataRows });
+        } catch (error) {
+          reject(error);
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read Excel file'));
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const parseCSVFile = async (file: File): Promise<{ headers: string[], dataRows: string[][] }> => {
+    const text = await file.text();
+    
+    // Split by lines but handle multiline quoted fields
+    const rawLines = text.split('\n');
+    const processedLines: string[] = [];
+    let currentLine = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i];
+      currentLine += (currentLine ? '\n' : '') + line;
+      
+      // Count quotes to determine if we're inside a quoted field
+      const quoteCount = (currentLine.match(/"/g) || []).length;
+      inQuotes = quoteCount % 2 === 1;
+      
+      if (!inQuotes && currentLine.trim()) {
+        processedLines.push(currentLine);
+        currentLine = '';
+      }
+    }
+    
+    // Add any remaining line
+    if (currentLine.trim()) {
+      processedLines.push(currentLine);
+    }
+
+    const lines = processedLines.filter(line => line.trim());
+    
+    if (lines.length < 2) {
+      throw new Error('File must contain at least a header row and one data row');
+    }
+
+    const headers = parseCSVLine(lines[0]);
+    const dataRows = lines.slice(1).map(line => parseCSVLine(line));
+
+    console.log('CSV parsed headers:', headers);
+    console.log('CSV parsed data rows:', dataRows.length);
+
+    return { headers, dataRows };
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -79,44 +159,23 @@ export const ExcelUpload: React.FC = () => {
     setIsProcessing(true);
 
     try {
-      const text = await file.text();
+      let headers: string[] = [];
+      let dataRows: string[][] = [];
+
+      // Determine file type and parse accordingly
+      const fileExtension = file.name.toLowerCase().split('.').pop();
       
-      // Split by lines but handle multiline quoted fields
-      const rawLines = text.split('\n');
-      const processedLines: string[] = [];
-      let currentLine = '';
-      let inQuotes = false;
-
-      for (let i = 0; i < rawLines.length; i++) {
-        const line = rawLines[i];
-        currentLine += (currentLine ? '\n' : '') + line;
-        
-        // Count quotes to determine if we're inside a quoted field
-        const quoteCount = (currentLine.match(/"/g) || []).length;
-        inQuotes = quoteCount % 2 === 1;
-        
-        if (!inQuotes && currentLine.trim()) {
-          processedLines.push(currentLine);
-          currentLine = '';
-        }
+      if (fileExtension === 'xlsx' || fileExtension === 'xls') {
+        const result = await parseExcelFile(file);
+        headers = result.headers;
+        dataRows = result.dataRows;
+      } else if (fileExtension === 'csv') {
+        const result = await parseCSVFile(file);
+        headers = result.headers;
+        dataRows = result.dataRows;
+      } else {
+        throw new Error('Unsupported file format. Please upload CSV or Excel files only.');
       }
-      
-      // Add any remaining line
-      if (currentLine.trim()) {
-        processedLines.push(currentLine);
-      }
-
-      const lines = processedLines.filter(line => line.trim());
-      
-      if (lines.length < 2) {
-        throw new Error('File must contain at least a header row and one data row');
-      }
-
-      const headers = parseCSVLine(lines[0]);
-      const dataRows = lines.slice(1);
-
-      console.log('Parsed headers:', headers);
-      console.log('Number of data rows:', dataRows.length);
 
       // Validate headers - check for key columns
       const keyColumns = ['FY', 'Process', 'Entity covered', 'Observation', 'Risk'];
@@ -132,11 +191,10 @@ export const ExcelUpload: React.FC = () => {
       let errorCount = 0;
 
       for (const row of dataRows) {
-        if (!row.trim()) continue;
+        if (!row.some(cell => cell.trim())) continue; // Skip empty rows
 
         try {
-          const values = parseCSVLine(row);
-          console.log('Parsed values for row:', values);
+          console.log('Processing row:', row);
           
           // Map risk level to valid enum values
           const mapRiskLevel = (risk: string): 'high' | 'medium' | 'low' => {
@@ -154,24 +212,24 @@ export const ExcelUpload: React.FC = () => {
           };
 
           const auditIssue: Omit<AuditIssue, 'id' | 'serialNumber' | 'createdAt' | 'updatedAt'> = {
-            fiscalYear: values[1] || '',
+            fiscalYear: row[1] || '',
             date: new Date().toISOString().split('T')[0],
-            process: values[2] || '',
-            entityCovered: values[3] || '',
-            observation: values[4] || '',
-            riskLevel: mapRiskLevel(values[5]),
-            recommendation: values[6] || '',
-            managementComment: values[7] || '',
-            personResponsible: values[8] || '',
-            approver: values[9] || '',
-            cxoResponsible: values[10] || '',
-            timeline: values[11] || '',
-            currentStatus: mapCurrentStatus(values[12]),
+            process: row[2] || '',
+            entityCovered: row[3] || '',
+            observation: row[4] || '',
+            riskLevel: mapRiskLevel(row[5]),
+            recommendation: row[6] || '',
+            managementComment: row[7] || '',
+            personResponsible: row[8] || '',
+            approver: row[9] || '',
+            cxoResponsible: row[10] || '',
+            timeline: row[11] || '',
+            currentStatus: mapCurrentStatus(row[12]),
             evidenceReceived: [],
-            reviewComments: values[14] || '',
-            riskAnnexure: values[16] || '',
-            actionRequired: values[17] || '',
-            iaComments: values[19] || ''
+            reviewComments: row[14] || '',
+            riskAnnexure: row[16] || '',
+            actionRequired: row[17] || '',
+            iaComments: row[19] || ''
           };
 
           addAuditIssue(auditIssue);

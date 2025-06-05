@@ -1,4 +1,3 @@
-
 import React, { useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -38,6 +37,41 @@ export const ExcelUpload: React.FC = () => {
     });
   };
 
+  // Enhanced CSV parser that handles quoted fields with line breaks
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let i = 0;
+
+    while (i < line.length) {
+      const char = line[i];
+      
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          // Escaped quote
+          current += '"';
+          i += 2;
+        } else {
+          // Toggle quote state
+          inQuotes = !inQuotes;
+          i++;
+        }
+      } else if (char === '\t' && !inQuotes) {
+        // Tab separator outside quotes
+        result.push(current.trim());
+        current = '';
+        i++;
+      } else {
+        current += char;
+        i++;
+      }
+    }
+    
+    result.push(current.trim());
+    return result;
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -46,14 +80,43 @@ export const ExcelUpload: React.FC = () => {
 
     try {
       const text = await file.text();
-      const lines = text.split('\n').filter(line => line.trim());
+      
+      // Split by lines but handle multiline quoted fields
+      const rawLines = text.split('\n');
+      const processedLines: string[] = [];
+      let currentLine = '';
+      let inQuotes = false;
+
+      for (let i = 0; i < rawLines.length; i++) {
+        const line = rawLines[i];
+        currentLine += (currentLine ? '\n' : '') + line;
+        
+        // Count quotes to determine if we're inside a quoted field
+        const quoteCount = (currentLine.match(/"/g) || []).length;
+        inQuotes = quoteCount % 2 === 1;
+        
+        if (!inQuotes && currentLine.trim()) {
+          processedLines.push(currentLine);
+          currentLine = '';
+        }
+      }
+      
+      // Add any remaining line
+      if (currentLine.trim()) {
+        processedLines.push(currentLine);
+      }
+
+      const lines = processedLines.filter(line => line.trim());
       
       if (lines.length < 2) {
         throw new Error('File must contain at least a header row and one data row');
       }
 
-      const headers = lines[0].split('\t').map(h => h.trim().replace(/"/g, ''));
+      const headers = parseCSVLine(lines[0]);
       const dataRows = lines.slice(1);
+
+      console.log('Parsed headers:', headers);
+      console.log('Number of data rows:', dataRows.length);
 
       // Validate headers - check for key columns
       const keyColumns = ['FY', 'Process', 'Entity covered', 'Observation', 'Risk'];
@@ -72,22 +135,38 @@ export const ExcelUpload: React.FC = () => {
         if (!row.trim()) continue;
 
         try {
-          const values = row.split('\t').map(v => v.trim().replace(/"/g, ''));
+          const values = parseCSVLine(row);
+          console.log('Parsed values for row:', values);
           
+          // Map risk level to valid enum values
+          const mapRiskLevel = (risk: string): 'high' | 'medium' | 'low' => {
+            const riskLower = risk?.toLowerCase();
+            if (riskLower === 'high') return 'high';
+            if (riskLower === 'low') return 'low';
+            return 'medium';
+          };
+
+          // Map current status to valid enum values
+          const mapCurrentStatus = (status: string): 'Received' | 'To Be Received' => {
+            const statusLower = status?.toLowerCase();
+            if (statusLower.includes('received')) return 'Received';
+            return 'To Be Received';
+          };
+
           const auditIssue: Omit<AuditIssue, 'id' | 'serialNumber' | 'createdAt' | 'updatedAt'> = {
             fiscalYear: values[1] || '',
             date: new Date().toISOString().split('T')[0],
             process: values[2] || '',
             entityCovered: values[3] || '',
             observation: values[4] || '',
-            riskLevel: (values[5]?.toLowerCase() as 'high' | 'medium' | 'low') || 'medium',
+            riskLevel: mapRiskLevel(values[5]),
             recommendation: values[6] || '',
             managementComment: values[7] || '',
             personResponsible: values[8] || '',
             approver: values[9] || '',
             cxoResponsible: values[10] || '',
             timeline: values[11] || '',
-            currentStatus: (values[12] as 'Received' | 'To Be Received') || 'To Be Received',
+            currentStatus: mapCurrentStatus(values[12]),
             evidenceReceived: [],
             reviewComments: values[14] || '',
             riskAnnexure: values[16] || '',
@@ -97,6 +176,7 @@ export const ExcelUpload: React.FC = () => {
 
           addAuditIssue(auditIssue);
           successCount++;
+          console.log('Successfully added audit issue:', auditIssue);
         } catch (error) {
           errorCount++;
           console.error('Error processing row:', row, error);
@@ -113,6 +193,7 @@ export const ExcelUpload: React.FC = () => {
       }
 
     } catch (error) {
+      console.error('Upload error:', error);
       toast({
         title: "Upload Failed",
         description: error instanceof Error ? error.message : "Failed to process the file",

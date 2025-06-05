@@ -17,11 +17,11 @@ export const ExcelUpload: React.FC = () => {
     'S.NO', 'FY', 'Process', 'Entity covered', 'Observation', 'Risk', 
     'Recommendation', 'Management Comment', 'Person Responsible', 'Approver', 
     'CXO', 'Timeline', 'Current status', 'Evidence', 'Review comments on Evidence Shared', 
-    'Risk Annexure', 'Action required', 'IA Comments'
+    'Risk', 'Annexure', 'Action required', 'Management comments', 'IA Comments'
   ];
 
   const downloadTemplate = () => {
-    const csvContent = requiredColumns.join(',') + '\n';
+    const csvContent = requiredColumns.join('\t') + '\n';
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -52,12 +52,13 @@ export const ExcelUpload: React.FC = () => {
         throw new Error('File must contain at least a header row and one data row');
       }
 
-      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+      const headers = lines[0].split('\t').map(h => h.trim().replace(/"/g, ''));
       const dataRows = lines.slice(1);
 
-      // Validate headers
-      const missingColumns = requiredColumns.filter(col => 
-        !headers.some(header => header.toLowerCase().includes(col.toLowerCase().slice(0, 5)))
+      // Validate headers - check for key columns
+      const keyColumns = ['FY', 'Process', 'Entity covered', 'Observation', 'Risk'];
+      const missingColumns = keyColumns.filter(col => 
+        !headers.some(header => header.toLowerCase().includes(col.toLowerCase()))
       );
 
       if (missingColumns.length > 0) {
@@ -71,7 +72,7 @@ export const ExcelUpload: React.FC = () => {
         if (!row.trim()) continue;
 
         try {
-          const values = row.split(',').map(v => v.trim().replace(/"/g, ''));
+          const values = row.split('\t').map(v => v.trim().replace(/"/g, ''));
           
           const auditIssue: Omit<AuditIssue, 'id' | 'serialNumber' | 'createdAt' | 'updatedAt'> = {
             fiscalYear: values[1] || '',
@@ -89,9 +90,9 @@ export const ExcelUpload: React.FC = () => {
             currentStatus: (values[12] as 'Received' | 'To Be Received') || 'To Be Received',
             evidenceReceived: [],
             reviewComments: values[14] || '',
-            riskAnnexure: values[15] || '',
-            actionRequired: values[16] || '',
-            iaComments: values[17] || ''
+            riskAnnexure: values[16] || '',
+            actionRequired: values[17] || '',
+            iaComments: values[19] || ''
           };
 
           addAuditIssue(auditIssue);
@@ -167,9 +168,9 @@ export const ExcelUpload: React.FC = () => {
                 <p className="font-medium">Important Notes:</p>
                 <ul className="list-disc list-inside mt-1 space-y-1">
                   <li>S.NO column should be left blank (auto-generated)</li>
-                  <li>Use the exact column headers as shown in the template</li>
+                  <li>Use tab-separated values or the exact column headers</li>
                   <li>Supported formats: CSV, Excel (.xlsx, .xls)</li>
-                  <li>Date format: YYYY-MM-DD</li>
+                  <li>Date format: YYYY-MM-DD for Timeline</li>
                 </ul>
               </div>
             </div>
@@ -234,8 +235,10 @@ export const ExcelUpload: React.FC = () => {
                   <TableCell>To Be Received</TableCell>
                   <TableCell></TableCell>
                   <TableCell></TableCell>
+                  <TableCell>high</TableCell>
                   <TableCell>Sample annexure...</TableCell>
                   <TableCell>Sample action...</TableCell>
+                  <TableCell>Sample mgmt comment...</TableCell>
                   <TableCell>Sample IA comment...</TableCell>
                 </TableRow>
               </TableBody>

@@ -43,7 +43,7 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
 
   // Fetch from server
   useEffect(() => {
-    fetch('https://audit-premier.onrender.com/api/audit-issues')
+    fetch('http://localhost:4000/api/audit-issues')
       .then(res => {
         if (!res.ok) throw new Error(`Status ${res.status}`);
         return res.json();

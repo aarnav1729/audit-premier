@@ -46,7 +46,7 @@ export const ExcelUpload: React.FC = () => {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch('https://audit-premier.onrender.com/api/audit-issues/upload', {
+      const response = await fetch('http://localhost:4000/api/audit-issues/upload', {
         method: 'POST',
         body: formData,
       });

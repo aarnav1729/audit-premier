@@ -61,7 +61,7 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
       }
 
       const res = await fetch(
-        `https://audit-premier.onrender.com/api/audit-issues/${auditIssueId}/evidence`,
+        `http://localhost:4000/api/audit-issues/${auditIssueId}/evidence`,
         { method: 'POST', body: formData }
       );
 

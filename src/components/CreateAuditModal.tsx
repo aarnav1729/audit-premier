@@ -1,3 +1,4 @@
+// root/src/components/CreateAuditModal.tsx
 
 import React, { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -54,21 +55,49 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
     setIsLoading(true);
 
     try {
-      const auditIssue: Omit<AuditIssue, 'id' | 'serialNumber' | 'createdAt' | 'updatedAt'> = {
-        ...formData,
-        timeline: timeline ? timeline.toISOString() : '',
-        evidenceReceived: []
+      // Prepare payload matching server endpoint
+      const payload = {
+        fiscalYear: formData.fiscalYear,
+        date: formData.date,
+        process: formData.process,
+        entityCovered: formData.entityCovered,
+        observation: formData.observation,
+        riskLevel: formData.riskLevel,
+        recommendation: formData.recommendation,
+        managementComment: formData.managementComment,
+        personResponsible: formData.personResponsible,
+        approver: formData.approver,
+        cxoResponsible: formData.cxoResponsible,
+        timeline: timeline ? timeline.toISOString().split('T')[0] : null,
+        currentStatus: formData.currentStatus,
+        riskAnnexure: formData.riskAnnexure,
+        actionRequired: formData.actionRequired,
+        iaComments: formData.iaComments
       };
 
-      addAuditIssue(auditIssue);
-      
+      // Call the backend endpoint
+      const response = await fetch('http://localhost:4000/api/audit-issues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server responded with ${response.status}`);
+      }
+
+      const newIssue: AuditIssue = await response.json();
+
+      // Update local storage/context
+      addAuditIssue(newIssue);
+
       toast({
         title: "Audit Issue Created",
         description: "New audit issue has been successfully created.",
       });
       
       onClose();
-      
+
       // Reset form
       setFormData({
         fiscalYear: '',
@@ -89,6 +118,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
       });
       setTimeline(undefined);
     } catch (error) {
+      console.error('Error creating audit issue:', error);
       toast({
         title: "Error",
         description: "Failed to create audit issue. Please try again.",
@@ -110,7 +140,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="fiscalYear">Fiscal Year *</Label>
-              <Select value={formData.fiscalYear} onValueChange={(value) => setFormData({...formData, fiscalYear: value})}>
+              <Select value={formData.fiscalYear} onValueChange={(value) => setFormData({ ...formData, fiscalYear: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select fiscal year" />
                 </SelectTrigger>
@@ -128,14 +158,14 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                 id="date"
                 type="date"
                 value={formData.date}
-                onChange={(e) => setFormData({...formData, date: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
                 required
               />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="process">Process *</Label>
-              <Select value={formData.process} onValueChange={(value) => setFormData({...formData, process: value})}>
+              <Select value={formData.process} onValueChange={(value) => setFormData({ ...formData, process: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select process" />
                 </SelectTrigger>
@@ -149,7 +179,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
 
             <div className="space-y-2">
               <Label htmlFor="entityCovered">Entity Covered *</Label>
-              <Select value={formData.entityCovered} onValueChange={(value) => setFormData({...formData, entityCovered: value})}>
+              <Select value={formData.entityCovered} onValueChange={(value) => setFormData({ ...formData, entityCovered: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select entity" />
                 </SelectTrigger>
@@ -163,7 +193,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
 
             <div className="space-y-2">
               <Label htmlFor="riskLevel">Risk Level *</Label>
-              <Select value={formData.riskLevel} onValueChange={(value: any) => setFormData({...formData, riskLevel: value})}>
+              <Select value={formData.riskLevel} onValueChange={(value: any) => setFormData({ ...formData, riskLevel: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select risk level" />
                 </SelectTrigger>
@@ -171,7 +201,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                   {RISK_LEVELS.map(level => (
                     <SelectItem key={level} value={level}>
                       <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
-                        level === 'high' ? 'bg-red-500' : 
+                        level === 'high' ? 'bg-red-500' :
                         level === 'medium' ? 'bg-yellow-500' : 'bg-green-500'
                       }`}></span>
                       {level.toUpperCase()}
@@ -183,7 +213,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
 
             <div className="space-y-2">
               <Label htmlFor="currentStatus">Current Status *</Label>
-              <Select value={formData.currentStatus} onValueChange={(value: any) => setFormData({...formData, currentStatus: value})}>
+              <Select value={formData.currentStatus} onValueChange={(value: any) => setFormData({ ...formData, currentStatus: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select status" />
                 </SelectTrigger>
@@ -228,7 +258,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                 id="personResponsible"
                 type="email"
                 value={formData.personResponsible}
-                onChange={(e) => setFormData({...formData, personResponsible: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, personResponsible: e.target.value })}
                 placeholder="person@example.com"
                 required
               />
@@ -240,7 +270,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                 id="approver"
                 type="email"
                 value={formData.approver}
-                onChange={(e) => setFormData({...formData, approver: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, approver: e.target.value })}
                 placeholder="approver@example.com"
                 required
               />
@@ -252,7 +282,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                 id="cxoResponsible"
                 type="email"
                 value={formData.cxoResponsible}
-                onChange={(e) => setFormData({...formData, cxoResponsible: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, cxoResponsible: e.target.value })}
                 placeholder="cxo@example.com"
                 required
               />
@@ -265,7 +295,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
               <Textarea
                 id="observation"
                 value={formData.observation}
-                onChange={(e) => setFormData({...formData, observation: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, observation: e.target.value })}
                 placeholder="Describe the audit observation..."
                 required
                 rows={3}
@@ -277,7 +307,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
               <Textarea
                 id="recommendation"
                 value={formData.recommendation}
-                onChange={(e) => setFormData({...formData, recommendation: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, recommendation: e.target.value })}
                 placeholder="Provide recommendations..."
                 required
                 rows={3}
@@ -289,7 +319,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
               <Textarea
                 id="managementComment"
                 value={formData.managementComment}
-                onChange={(e) => setFormData({...formData, managementComment: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, managementComment: e.target.value })}
                 placeholder="Management comments..."
                 rows={2}
               />
@@ -301,7 +331,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                 <Textarea
                   id="riskAnnexure"
                   value={formData.riskAnnexure}
-                  onChange={(e) => setFormData({...formData, riskAnnexure: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, riskAnnexure: e.target.value })}
                   placeholder="Risk annexure details..."
                   rows={2}
                 />
@@ -312,7 +342,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
                 <Textarea
                   id="actionRequired"
                   value={formData.actionRequired}
-                  onChange={(e) => setFormData({...formData, actionRequired: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, actionRequired: e.target.value })}
                   placeholder="Required actions..."
                   rows={2}
                 />
@@ -324,7 +354,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
               <Textarea
                 id="iaComments"
                 value={formData.iaComments}
-                onChange={(e) => setFormData({...formData, iaComments: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, iaComments: e.target.value })}
                 placeholder="Internal audit comments..."
                 rows={2}
               />
@@ -335,7 +365,11 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isLoading} className="bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600">
+            <Button
+              type="submit"
+              disabled={isLoading}
+              className="bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600"
+            >
               {isLoading ? "Creating..." : "Create Audit Issue"}
             </Button>
           </div>

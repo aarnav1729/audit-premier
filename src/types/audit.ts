@@ -1,4 +1,3 @@
-
 export interface AuditIssue {
   id: string;
   serialNumber: number;
@@ -32,8 +31,8 @@ export interface Evidence {
   fileSize: number;
   uploadedAt: string;
   uploadedBy: string;
-  content?: string; // For text evidence
-  base64Data?: string; // For file storage
+  content?: string;
+  base64Data?: string;
 }
 
 export interface User {

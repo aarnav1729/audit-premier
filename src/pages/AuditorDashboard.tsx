@@ -1,3 +1,5 @@
+// root/src/pages/AuditorDashboard.tsx
+
 import React, { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -19,12 +21,14 @@ import { toast } from '@/hooks/use-toast';
 export const AuditorDashboard: React.FC = () => {
   const { auditIssues, updateAuditIssue, addComment } = useAuditStorage();
   const { user } = useAuth();
+
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [selectedEvidence, setSelectedEvidence] = useState<any[]>([]);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<AuditIssue | null>(null);
   const [reviewComments, setReviewComments] = useState('');
   const [evidenceStatus, setEvidenceStatus] = useState<'Insufficient' | 'Accepted'>('Accepted');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
   const viewEvidence = (issue: AuditIssue) => {
     setSelectedEvidence(issue.evidenceReceived);
@@ -38,32 +42,64 @@ export const AuditorDashboard: React.FC = () => {
     setReviewModalOpen(true);
   };
 
-  const submitReview = () => {
+  const submitReview = async () => {
     if (!selectedIssue) return;
+    setIsSubmittingReview(true);
 
-    updateAuditIssue(selectedIssue.id, {
-      evidenceStatus,
-      reviewComments,
-      currentStatus: evidenceStatus === 'Accepted' ? 'Received' : 'To Be Received'
-    });
+    try {
+      // Call server review endpoint
+      const res = await fetch(
+        `http://localhost:4000/api/audit-issues/${selectedIssue.id}/review`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            evidenceStatus,
+            reviewComments
+          })
+        }
+      );
 
-    // Add comment
-    addComment({
-      auditIssueId: selectedIssue.id,
-      userId: user?.email || '',
-      userName: user?.name || '',
-      content: `Evidence marked as ${evidenceStatus}. ${reviewComments}`,
-      type: 'review'
-    });
+      const updated: AuditIssue & { error?: string } = await res.json();
+      if (!res.ok) {
+        throw new Error(updated.error || 'Failed to submit review');
+      }
 
-    toast({
-      title: "Review Submitted",
-      description: `Evidence has been marked as ${evidenceStatus.toLowerCase()}.`,
-    });
+      // Update local context
+      updateAuditIssue(updated.id, {
+        evidenceStatus: updated.evidenceStatus,
+        reviewComments: updated.reviewComments,
+        currentStatus: updated.currentStatus
+      });
 
-    setReviewModalOpen(false);
-    setSelectedIssue(null);
-    setReviewComments('');
+      // Add a comment record
+      addComment({
+        auditIssueId: updated.id,
+        userId: user?.email || '',
+        userName: user?.name || '',
+        content: `Evidence marked as ${updated.evidenceStatus}. ${updated.reviewComments}`,
+        type: 'review'
+      });
+
+      toast({
+        title: "Review Submitted",
+        description: `Evidence has been marked as ${updated.evidenceStatus.toLowerCase()}.`,
+      });
+
+      // Reset modal state
+      setReviewModalOpen(false);
+      setSelectedIssue(null);
+      setReviewComments('');
+    } catch (err: any) {
+      console.error('Review submission error:', err);
+      toast({
+        title: "Error Submitting Review",
+        description: err.message || 'Please try again.',
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmittingReview(false);
+    }
   };
 
   const getActionColumn = (issue: AuditIssue) => (
@@ -134,7 +170,7 @@ export const AuditorDashboard: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-4">
-          <Analytics auditIssues={auditIssues} title="Audit Analytics Dashboard" />
+          <Analytics title="Audit Analytics Dashboard" />
         </TabsContent>
       </Tabs>
 
@@ -156,7 +192,11 @@ export const AuditorDashboard: React.FC = () => {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Evidence Status</Label>
-              <Select value={evidenceStatus} onValueChange={(value: any) => setEvidenceStatus(value)}>
+              <Select
+                value={evidenceStatus}
+                onValueChange={value => setEvidenceStatus(value)}
+                disabled={isSubmittingReview}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -171,18 +211,23 @@ export const AuditorDashboard: React.FC = () => {
               <Label>Review Comments</Label>
               <Textarea
                 value={reviewComments}
-                onChange={(e) => setReviewComments(e.target.value)}
+                onChange={e => setReviewComments(e.target.value)}
                 placeholder="Add your review comments..."
                 rows={4}
+                disabled={isSubmittingReview}
               />
             </div>
 
             <div className="flex justify-end space-x-2">
-              <Button variant="outline" onClick={() => setReviewModalOpen(false)}>
+              <Button variant="outline" onClick={() => setReviewModalOpen(false)} disabled={isSubmittingReview}>
                 Cancel
               </Button>
-              <Button onClick={submitReview} className="bg-gradient-to-r from-blue-500 to-green-500">
-                Submit Review
+              <Button
+                onClick={submitReview}
+                className="bg-gradient-to-r from-blue-500 to-green-500"
+                disabled={isSubmittingReview}
+              >
+                {isSubmittingReview ? 'Submitting...' : 'Submit Review'}
               </Button>
             </div>
           </div>

@@ -1,3 +1,4 @@
+// root/src/components/UploadEvidenceModal.tsx
 
 import React, { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -12,7 +13,7 @@ import { Evidence } from '@/types/audit';
 interface UploadEvidenceModalProps {
   open: boolean;
   onClose: () => void;
-  onUpload: (evidence: Evidence[], textEvidence?: string) => void;
+  onUpload: (evidence: Evidence[]) => void;
   auditIssueId: string;
   userEmail: string;
 }
@@ -30,77 +31,12 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const newFiles = Array.from(e.target.files);
-      setFiles(prev => [...prev, ...newFiles]);
+      setFiles(prev => [...prev, ...Array.from(e.target.files)]);
     }
   };
 
   const removeFile = (index: number) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-
-    try {
-      const evidenceFiles: Evidence[] = [];
-
-      // Process file uploads
-      for (const file of files) {
-        const reader = new FileReader();
-        const base64Data = await new Promise<string>((resolve) => {
-          reader.onload = () => resolve(reader.result as string);
-          reader.readAsDataURL(file);
-        });
-
-        const evidence: Evidence = {
-          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-          fileName: file.name,
-          fileType: file.type,
-          fileSize: file.size,
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: userEmail,
-          base64Data
-        };
-
-        evidenceFiles.push(evidence);
-      }
-
-      // Add text evidence if provided
-      if (textEvidence.trim()) {
-        const textEvidenceFile: Evidence = {
-          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-          fileName: 'Text Evidence',
-          fileType: 'text/plain',
-          fileSize: textEvidence.length,
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: userEmail,
-          content: textEvidence
-        };
-        evidenceFiles.push(textEvidenceFile);
-      }
-
-      onUpload(evidenceFiles, textEvidence);
-      
-      toast({
-        title: "Evidence Uploaded",
-        description: "Evidence has been successfully uploaded.",
-      });
-
-      // Reset form
-      setFiles([]);
-      setTextEvidence('');
-      onClose();
-    } catch (error) {
-      toast({
-        title: "Upload Failed",
-        description: "Failed to upload evidence. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
   };
 
   const formatFileSize = (bytes: number) => {
@@ -109,6 +45,61 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (files.length === 0 && !textEvidence.trim()) return;
+    setIsLoading(true);
+
+    try {
+      const formData = new FormData();
+      files.forEach(file => formData.append('evidence', file));
+      formData.append('uploadedBy', userEmail);
+      if (textEvidence.trim()) {
+        formData.append('textEvidence', textEvidence.trim());
+      }
+
+      const res = await fetch(
+        `http://localhost:4000/api/audit-issues/${auditIssueId}/evidence`,
+        { method: 'POST', body: formData }
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Upload failed');
+      }
+
+      const result = await res.json();
+      toast({
+        title: "Proof Uploaded",
+        description: result.message,
+      });
+
+      // build Evidence[] for local update
+      const newEvidence: Evidence[] = files.map(file => ({
+        id: Date.now().toString() + Math.random().toString(36).substr(2,9),
+        fileName: file.name,
+        fileType: file.type,
+        fileSize: file.size,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: userEmail
+      }));
+
+      onUpload(newEvidence);
+      setFiles([]);
+      setTextEvidence('');
+      onClose();
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      toast({
+        title: "Upload Failed",
+        description: error.message || "Failed to upload evidence",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -137,7 +128,7 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
                 />
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Any file type, up to 10MB per file
+                Any file type, no size restriction
               </p>
             </div>
           </div>
@@ -146,8 +137,8 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
             <div className="space-y-2">
               <Label>Selected Files</Label>
               <div className="space-y-2">
-                {files.map((file, index) => (
-                  <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                {files.map((file, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div className="flex items-center space-x-3">
                       <File className="h-5 w-5 text-gray-500" />
                       <div>
@@ -155,12 +146,7 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
                         <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
                       </div>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => removeFile(index)}
-                    >
+                    <Button type="button" variant="ghost" size="sm" onClick={() => removeFile(idx)}>
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
@@ -174,22 +160,22 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
             <Textarea
               id="text-evidence"
               value={textEvidence}
-              onChange={(e) => setTextEvidence(e.target.value)}
-              placeholder="Enter any additional text evidence or comments..."
+              onChange={e => setTextEvidence(e.target.value)}
+              placeholder="Additional comments..."
               rows={4}
             />
           </div>
 
           <div className="flex justify-end space-x-2">
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={isLoading}>
               Cancel
             </Button>
-            <Button 
-              type="submit" 
+            <Button
+              type="submit"
               disabled={isLoading || (files.length === 0 && !textEvidence.trim())}
               className="bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600"
             >
-              {isLoading ? "Uploading..." : "Upload Evidence"}
+              {isLoading ? 'Uploading...' : 'Upload Evidence'}
             </Button>
           </div>
         </form>

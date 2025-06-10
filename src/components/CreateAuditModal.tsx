@@ -76,7 +76,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
       };
 
       // Call the backend endpoint
-      const response = await fetch('http://localhost:4000/api/audit-issues', {
+      const response = await fetch('https://audit-premier.onrender.com/api/audit-issues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

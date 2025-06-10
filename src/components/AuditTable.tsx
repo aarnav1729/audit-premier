@@ -47,7 +47,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   const fetchIssues = async () => {
     try {
       setLoading(true);
-      const res = await fetch('http://localhost:4000/api/audit-issues');
+      const res = await fetch('https://audit-premier.onrender.com/api/audit-issues');
       if (!res.ok) throw new Error(`Status ${res.status}`);
       const data: AuditIssue[] = await res.json();
       setIssues(data);

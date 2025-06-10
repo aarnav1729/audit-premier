@@ -49,7 +49,7 @@ export const AuditorDashboard: React.FC = () => {
     try {
       // Call server review endpoint
       const res = await fetch(
-        `http://localhost:4000/api/audit-issues/${selectedIssue.id}/review`,
+        `https://audit-premier.onrender.com/api/audit-issues/${selectedIssue.id}/review`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },

@@ -1,4 +1,4 @@
-
+// root/src/components/EvidenceViewer.tsx
 import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -21,7 +21,6 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
 }) => {
   const downloadFile = (evidenceItem: Evidence) => {
     if (evidenceItem.content) {
-      // Text evidence
       const blob = new Blob([evidenceItem.content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -32,7 +31,6 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } else if (evidenceItem.base64Data) {
-      // File evidence
       const link = document.createElement('a');
       link.href = evidenceItem.base64Data;
       link.download = evidenceItem.fileName;
@@ -57,9 +55,7 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
     return <File className="h-8 w-8 text-gray-500" />;
   };
 
-  const isImage = (fileType: string) => {
-    return fileType.startsWith('image/');
-  };
+  const isImage = (fileType: string) => fileType.startsWith('image/');
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -74,30 +70,30 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
               No evidence files available.
             </div>
           ) : (
-            evidence.map((evidenceItem) => (
-              <div key={evidenceItem.id} className="border rounded-lg p-4 space-y-3">
+            evidence.map((item) => (
+              <div key={item.id} className="border rounded-lg p-4 space-y-3">
                 <div className="flex items-start justify-between">
                   <div className="flex items-start space-x-3">
-                    {getFileIcon(evidenceItem.fileType)}
+                    {getFileIcon(item.fileType)}
                     <div className="flex-1">
-                      <h3 className="font-medium text-gray-900">{evidenceItem.fileName}</h3>
+                      <h3 className="font-medium text-gray-900">{item.fileName}</h3>
                       <div className="flex items-center space-x-4 text-sm text-gray-500 mt-1">
                         <div className="flex items-center space-x-1">
                           <Calendar className="h-3 w-3" />
-                          <span>{new Date(evidenceItem.uploadedAt).toLocaleDateString()}</span>
+                          <span>{new Date(item.uploadedAt).toLocaleDateString()}</span>
                         </div>
                         <div className="flex items-center space-x-1">
                           <User className="h-3 w-3" />
-                          <span>{evidenceItem.uploadedBy}</span>
+                          <span>{item.uploadedBy}</span>
                         </div>
-                        <Badge variant="outline">{formatFileSize(evidenceItem.fileSize)}</Badge>
+                        <Badge variant="outline">{formatFileSize(item.fileSize)}</Badge>
                       </div>
                     </div>
                   </div>
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => downloadFile(evidenceItem)}
+                    onClick={() => downloadFile(item)}
                     className="flex items-center space-x-1"
                   >
                     <Download className="h-4 w-4" />
@@ -105,19 +101,21 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
                   </Button>
                 </div>
 
-                {evidenceItem.content && (
+                {/* Text content (comment or justification) */}
+                {item.content && (
                   <div className="bg-gray-50 rounded-lg p-3">
                     <p className="text-sm text-gray-700 whitespace-pre-wrap">
-                      {evidenceItem.content}
+                      {item.content}
                     </p>
                   </div>
                 )}
 
-                {evidenceItem.base64Data && isImage(evidenceItem.fileType) && (
+                {/* Image preview */}
+                {item.base64Data && isImage(item.fileType) && (
                   <div className="bg-gray-50 rounded-lg p-3">
                     <img
-                      src={evidenceItem.base64Data}
-                      alt={evidenceItem.fileName}
+                      src={item.base64Data}
+                      alt={item.fileName}
                       className="max-w-full h-auto rounded"
                       style={{ maxHeight: '300px' }}
                     />

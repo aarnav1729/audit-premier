@@ -1,12 +1,8 @@
 // root/src/components/Analytics.tsx
 
-import React, { useState, useEffect } from 'react';
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle
-} from '@/components/ui/card';
+import React, { useState, useEffect } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from '@/components/ui/button';
 import {
   BarChart,
   Bar,
@@ -19,41 +15,43 @@ import {
   Pie,
   Cell,
   LineChart,
-  Line
-} from 'recharts';
-import { AuditIssue } from '@/types/audit';
+  Line,
+} from "recharts";
+import { AuditIssue } from "@/types/audit";
 import {
   TrendingUp,
   AlertTriangle,
   CheckCircle,
   Clock,
-  Users
-} from 'lucide-react';
+  Users,
+} from "lucide-react";
 
 interface AnalyticsProps {
   title?: string;
 }
 
-const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
+const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"];
 
-export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboard" }) => {
+export const Analytics: React.FC<AnalyticsProps> = ({
+  title = "Analytics Dashboard",
+}) => {
   const [auditIssues, setAuditIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
   // Fetch from server
   useEffect(() => {
-    fetch('http://localhost:4000/api/audit-issues')
-      .then(res => {
+    fetch("http://localhost:30443/api/audit-issues")
+      .then((res) => {
         if (!res.ok) throw new Error(`Status ${res.status}`);
         return res.json();
       })
       .then((data: AuditIssue[]) => {
         setAuditIssues(data);
       })
-      .catch(err => {
-        console.error('Failed to load audit issues for analytics', err);
-        setError('Failed to load data');
+      .catch((err) => {
+        console.error("Failed to load audit issues for analytics", err);
+        setError("Failed to load data");
       })
       .finally(() => setLoading(false));
   }, []);
@@ -67,48 +65,108 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
 
   // Calculate analytics
   const totalIssues = auditIssues.length;
-  const highRiskIssues = auditIssues.filter(i => i.riskLevel === 'high').length;
-  const completedIssues = auditIssues.filter(i => i.currentStatus === 'Received').length;
+  const highRiskIssues = auditIssues.filter(
+    (i) => i.riskLevel === "high"
+  ).length;
+  const completedIssues = auditIssues.filter(
+    (i) => i.currentStatus === "Received"
+  ).length;
   const pendingIssues = totalIssues - completedIssues;
-  const completionRate = totalIssues > 0 ? (completedIssues / totalIssues) * 100 : 0;
+  const completionRate =
+    totalIssues > 0 ? (completedIssues / totalIssues) * 100 : 0;
 
   const statusData = [
-    { name: 'Received', value: completedIssues, color: '#10B981' },
-    { name: 'To Be Received', value: pendingIssues, color: '#F59E0B' }
+    { name: "Received", value: completedIssues, color: "#10B981" },
+    { name: "To Be Received", value: pendingIssues, color: "#F59E0B" },
   ];
 
   const riskData = [
-    { name: 'High', value: auditIssues.filter(i => i.riskLevel === 'high').length, color: '#EF4444' },
-    { name: 'Medium', value: auditIssues.filter(i => i.riskLevel === 'medium').length, color: '#F59E0B' },
-    { name: 'Low', value: auditIssues.filter(i => i.riskLevel === 'low').length, color: '#10B981' }
+    {
+      name: "High",
+      value: auditIssues.filter((i) => i.riskLevel === "high").length,
+      color: "#EF4444",
+    },
+    {
+      name: "Medium",
+      value: auditIssues.filter((i) => i.riskLevel === "medium").length,
+      color: "#F59E0B",
+    },
+    {
+      name: "Low",
+      value: auditIssues.filter((i) => i.riskLevel === "low").length,
+      color: "#10B981",
+    },
   ];
 
-  const processData = Array.from(new Set(auditIssues.map(i => i.process)))
-    .map(proc => ({
-      name: proc,
-      value: auditIssues.filter(i => i.process === proc).length
-    }));
+  const processData = Array.from(
+    new Set(auditIssues.map((i) => i.process))
+  ).map((proc) => ({
+    name: proc,
+    value: auditIssues.filter((i) => i.process === proc).length,
+  }));
 
-  const cxoData = Array.from(new Set(auditIssues.map(i => i.cxoResponsible)))
-    .map(cxo => ({
-      name: cxo.split('@')[0],
-      received: auditIssues.filter(i => i.cxoResponsible === cxo && i.currentStatus === 'Received').length,
-      pending: auditIssues.filter(i => i.cxoResponsible === cxo && i.currentStatus !== 'Received').length
-    }));
+  const cxoData = Array.from(
+    new Set(auditIssues.map((i) => i.cxoResponsible))
+  ).map((cxo) => ({
+    name: cxo.split("@")[0],
+    received: auditIssues.filter(
+      (i) => i.cxoResponsible === cxo && i.currentStatus === "Received"
+    ).length,
+    pending: auditIssues.filter(
+      (i) => i.cxoResponsible === cxo && i.currentStatus !== "Received"
+    ).length,
+  }));
 
-  const fiscalYearData = Array.from(new Set(auditIssues.map(i => i.fiscalYear)))
+  const fiscalYearData = Array.from(
+    new Set(auditIssues.map((i) => i.fiscalYear))
+  )
     .sort()
-    .map(year => ({
+    .map((year) => ({
       year,
-      total: auditIssues.filter(i => i.fiscalYear === year).length,
-      high: auditIssues.filter(i => i.fiscalYear === year && i.riskLevel === 'high').length
+      total: auditIssues.filter((i) => i.fiscalYear === year).length,
+      high: auditIssues.filter(
+        (i) => i.fiscalYear === year && i.riskLevel === "high"
+      ).length,
     }));
 
-  const entityData = Array.from(new Set(auditIssues.map(i => i.entityCovered)))
-    .map(ent => ({
-      name: ent,
-      value: auditIssues.filter(i => i.entityCovered === ent).length
-    }));
+  const entityData = Array.from(
+    new Set(auditIssues.map((i) => i.entityCovered))
+  ).map((ent) => ({
+    name: ent,
+    value: auditIssues.filter((i) => i.entityCovered === ent).length,
+  }));
+
+  const downloadReport = async (type: "next3" | "next6" | "overdue") => {
+    try {
+      const res = await fetch(
+        `http://localhost:30443/api/audit-issues/reports/${type}`
+      );
+      if (!res.ok) throw new Error(`Status ${res.status}`);
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const filename =
+        type === "next3"
+          ? "next-3-months-report.xlsx"
+          : type === "next6"
+          ? "next-6-months-report.xlsx"
+          : "overdue-report.xlsx";
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error("Report download error:", err);
+      toast({
+        title: "Download Failed",
+        description: err.message || "Unable to download report",
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -132,7 +190,9 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
             <div className="flex justify-between items-center">
               <div>
                 <p className="text-sm text-gray-600">High Risk</p>
-                <p className="text-3xl font-bold text-red-600">{highRiskIssues}</p>
+                <p className="text-3xl font-bold text-red-600">
+                  {highRiskIssues}
+                </p>
               </div>
               <AlertTriangle className="h-8 w-8 text-red-500" />
             </div>
@@ -143,7 +203,9 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
             <div className="flex justify-between items-center">
               <div>
                 <p className="text-sm text-gray-600">Completed</p>
-                <p className="text-3xl font-bold text-green-600">{completedIssues}</p>
+                <p className="text-3xl font-bold text-green-600">
+                  {completedIssues}
+                </p>
               </div>
               <CheckCircle className="h-8 w-8 text-green-500" />
             </div>
@@ -154,7 +216,9 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
             <div className="flex justify-between items-center">
               <div>
                 <p className="text-sm text-gray-600">Pending</p>
-                <p className="text-3xl font-bold text-orange-600">{pendingIssues}</p>
+                <p className="text-3xl font-bold text-orange-600">
+                  {pendingIssues}
+                </p>
               </div>
               <Clock className="h-8 w-8 text-orange-500" />
             </div>
@@ -165,7 +229,9 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
             <div className="flex justify-between items-center">
               <div>
                 <p className="text-sm text-gray-600">Completion Rate</p>
-                <p className="text-3xl font-bold text-blue-600">{completionRate.toFixed(1)}%</p>
+                <p className="text-3xl font-bold text-blue-600">
+                  {completionRate.toFixed(1)}%
+                </p>
               </div>
               <Users className="h-8 w-8 text-blue-500" />
             </div>
@@ -176,7 +242,9 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
-          <CardHeader><CardTitle>Status Distribution</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Status Distribution</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
@@ -201,7 +269,9 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Risk Level Distribution</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Risk Level Distribution</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
@@ -226,12 +296,19 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Issues by Process</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Issues by Process</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={processData}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} />
+                <XAxis
+                  dataKey="name"
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                />
                 <YAxis />
                 <Tooltip />
                 <Bar dataKey="value" fill="#3B82F6" />
@@ -241,23 +318,42 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>CXO Performance</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>CXO Performance</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={cxoData}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} />
+                <XAxis
+                  dataKey="name"
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                />
                 <YAxis />
                 <Tooltip />
-                <Bar dataKey="received" stackId="a" fill="#10B981" name="Received" />
-                <Bar dataKey="pending" stackId="a" fill="#F59E0B" name="Pending" />
+                <Bar
+                  dataKey="received"
+                  stackId="a"
+                  fill="#10B981"
+                  name="Received"
+                />
+                <Bar
+                  dataKey="pending"
+                  stackId="a"
+                  fill="#F59E0B"
+                  name="Pending"
+                />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Fiscal Year Trend</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Fiscal Year Trend</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <LineChart data={fiscalYearData}>
@@ -265,15 +361,29 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
                 <XAxis dataKey="year" />
                 <YAxis />
                 <Tooltip />
-                <Line type="monotone" dataKey="total" stroke="#3B82F6" strokeWidth={2} name="Total" />
-                <Line type="monotone" dataKey="high" stroke="#EF4444" strokeWidth={2} name="High Risk" />
+                <Line
+                  type="monotone"
+                  dataKey="total"
+                  stroke="#3B82F6"
+                  strokeWidth={2}
+                  name="Total"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="high"
+                  stroke="#EF4444"
+                  strokeWidth={2}
+                  name="High Risk"
+                />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Issues by Entity</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Issues by Entity</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={entityData}>
@@ -286,7 +396,37 @@ export const Analytics: React.FC<AnalyticsProps> = ({ title = "Analytics Dashboa
             </ResponsiveContainer>
           </CardContent>
         </Card>
+        {/* ─── New Reports Section ─────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Reports</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span>Next 3 Months</span>
+              <Button onClick={() => downloadReport('next3')}>
+                Download Excel
+              </Button>
+            </div>
+            <div className="flex justify-between items-center">
+              <span>Next 6 Months</span>
+              <Button onClick={() => downloadReport('next6')}>
+                Download Excel
+              </Button>
+            </div>
+            <div className="flex justify-between items-center">
+              <span>Overdue</span>
+              <Button onClick={() => downloadReport('overdue')}>
+                Download Excel
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
       </div>
+
+      
     </div>
   );
 };

@@ -25,7 +25,7 @@ export const Navbar: React.FC = () => {
             <Shield className="h-6 w-6 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-gray-900">Audit Vista Portal</h1>
+            <h1 className="text-xl font-bold text-gray-900">Audit @Premier Energies</h1>
             <p className="text-sm text-gray-600">Comprehensive Audit Management</p>
           </div>
         </div>

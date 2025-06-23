@@ -23,7 +23,7 @@ export const Login: React.FC = () => {
       if (success) {
         toast({
           title: "Login Successful",
-          description: "Welcome to Audit Vista Portal",
+          description: "Welcome to Audit @Premier Energies",
         });
       } else {
         toast({
@@ -45,7 +45,7 @@ export const Login: React.FC = () => {
               <Shield className="h-8 w-8 text-white" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Audit Vista Portal</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">Audit @Premier Energies</h1>
           <p className="text-gray-600">Comprehensive Audit Management System</p>
         </div>
 

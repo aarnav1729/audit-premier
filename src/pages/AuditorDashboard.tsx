@@ -18,6 +18,8 @@ import { useAuth } from '@/hooks/useAuth';
 import { AuditIssue } from '@/types/audit';
 import { toast } from '@/hooks/use-toast';
 
+const API_BASE_URL = `${window.location.origin}/api`;
+
 export const AuditorDashboard: React.FC = () => {
   const { auditIssues, updateAuditIssue, addComment } = useAuditStorage();
   const { user } = useAuth();
@@ -49,9 +51,10 @@ export const AuditorDashboard: React.FC = () => {
     try {
       // Call server review endpoint
       const res = await fetch(
-        `http://localhost:30443/api/audit-issues/${selectedIssue.id}/review`,
+        `${API_BASE_URL}/audit-issues/${selectedIssue.id}/review`,
         {
           method: 'PUT',
+          credentials: "include",
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             evidenceStatus,

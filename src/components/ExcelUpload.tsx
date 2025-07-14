@@ -7,6 +7,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Upload, Download, FileSpreadsheet, AlertCircle } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
+const API_BASE_URL = `${window.location.origin}/api`;
+
 export const ExcelUpload: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -46,7 +48,7 @@ export const ExcelUpload: React.FC = () => {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch('http://localhost:30443/api/audit-issues/upload', {
+      const response = await fetch('${API_BASE_URL}/audit-issues/upload', {
         method: 'POST',
         body: formData,
       });

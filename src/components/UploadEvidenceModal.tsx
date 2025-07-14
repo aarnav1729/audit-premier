@@ -14,6 +14,7 @@ import { Upload, File as FileIcon, X } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Evidence, AuditIssue } from "@/types/audit";
 import { useAuditStorage } from "@/hooks/useAuditStorage";
+const API_BASE_URL = `${window.location.origin}/api`;
 
 interface UploadEvidenceModalProps {
   open: boolean;
@@ -97,7 +98,7 @@ export const UploadEvidenceModal: React.FC<UploadEvidenceModalProps> = ({
       }
 
       const res = await fetch(
-        `http://localhost:30443/api/audit-issues/${auditIssueId}/evidence`,
+        `${API_BASE_URL}/audit-issues/${auditIssueId}/evidence`,
         { method: "POST", body: formData }
       );
 

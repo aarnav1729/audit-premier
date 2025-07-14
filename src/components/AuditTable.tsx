@@ -17,6 +17,8 @@ import { Search, ArrowUpDown, Plus, Filter } from 'lucide-react';
 import { AuditIssue } from '@/types/audit';
 import { CreateAuditModal } from './CreateAuditModal';
 
+const API_BASE_URL = `${window.location.origin}/api`;
+
 interface AuditTableProps {
   showCreateButton?: boolean;
   title?: string;
@@ -47,7 +49,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   const fetchIssues = async () => {
     try {
       setLoading(true);
-      const res = await fetch('http://localhost:30443/api/audit-issues');
+      const res = await fetch(`${API_BASE_URL}/audit-issues`);
       if (!res.ok) throw new Error(`Status ${res.status}`);
       const data: AuditIssue[] = await res.json();
       setIssues(data);

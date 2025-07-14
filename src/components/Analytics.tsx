@@ -25,7 +25,7 @@ import {
   Clock,
   Users,
 } from "lucide-react";
-
+const API_BASE_URL = `${window.location.origin}/api`;
 interface AnalyticsProps {
   title?: string;
 }
@@ -41,7 +41,7 @@ export const Analytics: React.FC<AnalyticsProps> = ({
 
   // Fetch from server
   useEffect(() => {
-    fetch("http://localhost:30443/api/audit-issues")
+    fetch(`${API_BASE_URL}/audit-issues`)
       .then((res) => {
         if (!res.ok) throw new Error(`Status ${res.status}`);
         return res.json();
@@ -139,7 +139,7 @@ export const Analytics: React.FC<AnalyticsProps> = ({
   const downloadReport = async (type: "next3" | "next6" | "overdue") => {
     try {
       const res = await fetch(
-        `http://localhost:30443/api/audit-issues/reports/${type}`
+        `${API_BASE_URL}/audit-issues/reports/${type}`
       );
       if (!res.ok) throw new Error(`Status ${res.status}`);
 

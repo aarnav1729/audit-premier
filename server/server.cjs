@@ -5,23 +5,40 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const XLSX = require("xlsx");
+const morgan = require("morgan");
+const https = require("https");
+const http = require("http");
+const dotenv = require("dotenv");
+dotenv.config();
 const { Client } = require("@microsoft/microsoft-graph-client");
 const { ClientSecretCredential } = require("@azure/identity");
 require("isomorphic-fetch");
 
 const app = express();
-app.use(cors());
+
+// Use CORS with all origins and allow PATCH
+app.use(cors({
+  origin: "*",  // Allow all origins
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  credentials: true,
+}));
+app.options(/.*/, cors());  // Handle preflight requests
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(morgan('dev'));
+
+// Serve static files from the "dist" folder
+app.use(express.static(path.join(__dirname, '../dist')));
 
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
+app.use("/uploads", express.static(uploadsDir));
 
-// multer for Excel/CSV (in memory)
+// Multer setup
 const upload = multer({ storage: multer.memoryStorage() });
-
-// --- multer for any file attachment (including annexure) ---
 const evidenceStorage = multer.diskStorage({
   destination: uploadsDir,
   filename: (req, file, cb) => {
@@ -755,26 +772,43 @@ app.get('/api/audit-issues/reports/:reportType', async (req, res) => {
   }
 });
 
-const clientDist = path.join(__dirname, "dist");
 
-// Only if that folder exists, mount it:
-if (fs.existsSync(clientDist)) {
-  // 1) serve files (index.html, static/js/*.js, etc.)
-  app.use(express.static(clientDist));
-
-  // 2) any GET that doesn't start with /api → index.html
-  //    (so React Router can handle client‐side routes)
-  app.get(/^\/(?!api).*/, (req, res) => {
-    res.sendFile(path.join(clientDist, "index.html"));
-  });
-}
-
-// global error handler
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error" });
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
-// start server
-const PORT = process.env.PORT || 30443;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+const PORT = process.env.PORT || 12443;
+const HOST = process.env.HOST || "0.0.0.0";
+
+const httpsOptions = {
+  key: fs.readFileSync(path.join(__dirname, "certs", "mydomain.key"), "utf8"),
+  cert: fs.readFileSync(
+    path.join(__dirname, "certs", "d466aacf3db3f299.crt"),
+    "utf8"
+  ),
+  ca: fs.readFileSync(
+    path.join(__dirname, "certs", "gd_bundle-g2-g1.crt"),
+    "utf8"
+  ),
+};
+
+const startServer = async () => {
+  try {
+    // HTTPS
+    https.createServer(httpsOptions, app).listen(PORT, HOST, () => {
+      console.log(`HTTPS Server running at https://${HOST}:${PORT}`);
+    });
+
+    // HTTP (for local/dev)
+    const HTTP_PORT = process.env.HTTP_PORT || 7723;
+    http.createServer(app).listen(HTTP_PORT, HOST, () => {
+      console.log(` HTTP Server running at http://${HOST}:${HTTP_PORT}`);
+    });
+  } catch (error) {
+    console.error("Error starting the server:", error);
+    process.exit(1);
+  }
+};
+
+startServer();

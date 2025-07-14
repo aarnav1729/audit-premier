@@ -20,6 +20,8 @@ interface CreateAuditModalProps {
   onClose: () => void
 }
 
+const API_BASE_URL = `${window.location.origin}/api`;
+
 const FISCAL_YEARS = ['2022-23','2023-24','2024-25','2025-26']
 const PROCESSES = [
   'Procure to Pay','Inventory Management','Order to Cash',
@@ -104,7 +106,7 @@ export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({ open, onClos
         payload.append('actionRequired', formData.actionRequired)
         payload.append('iaComments', formData.iaComments)
 
-        const res = await fetch('http://localhost:30443/api/audit-issues', {
+        const res = await fetch('${API_BASE_URL}/audit-issues', {
           method: 'POST',
           body: payload
         })

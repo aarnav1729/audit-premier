@@ -5,12 +5,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Upload, Download, FileSpreadsheet, AlertCircle } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
-const API_BASE_URL = 'http://localhost:7723/api';
+const API_BASE_URL = `${window.location.origin}/api`;
 
 export const ExcelUpload: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Keep lowercase headers (server is case-insensitive)
   const requiredColumns = [
     'fiscalYear',
     'process',
@@ -19,27 +20,50 @@ export const ExcelUpload: React.FC = () => {
     'riskLevel',
     'recommendation',
     'managementComment',
-    'personResponsible',
-    'approver',
-    'cxoResponsible',
-    'coOwner',
-    'timeline',
-    'currentStatus',
-    'startMonth',
-    'endMonth',
+    'personResponsible',  // allow multiple: "a@x.com; b@y.com"
+    'approver',           // allow multiple
+    'cxoResponsible',     // allow multiple
+    'coOwner',            // optional, allow multiple
+    'timeline',           // ISO (YYYY-MM-DD) or Excel date
+    'currentStatus',      // Received | Partially Received | To Be Received
+    'startMonth',         // coverage start (e.g., Jan)
+    'endMonth',           // coverage end (e.g., Mar)
     'reviewComments',
     'risk',
     'actionRequired',
-    'annexure',
+    'annexure'            // "file1.pdf; file2.docx" (names only)
   ];
 
   const downloadTemplate = () => {
-    const csvContent = requiredColumns.join('\t') + '\n';
-    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const header = requiredColumns.join('\t') + '\n';
+    const example = [
+      '2024-25',
+      'ITGC',
+      'PEL',
+      'Observation content',
+      'High',
+      'Recommendation content',
+      'Management comments',
+      'person@example.com; second@company.com',
+      'approver@example.com',
+      'cxo@example.com',
+      'co-owner@example.com',
+      '2024-12-01',
+      'Partially Received',
+      'Jan',
+      'Mar',
+      'Reviewed and verified',
+      'Medium operational risk',
+      'Follow-up required',
+      'evidence.pdf; policy.docx'
+    ].join('\t') + '\n';
+
+    const tsv = header + example;
+    const blob = new Blob([tsv], { type: 'text/tab-separated-values;charset=utf-8;' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'audit_issues_template.csv';
+    a.download = 'audit_issues_template.tsv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -47,7 +71,7 @@ export const ExcelUpload: React.FC = () => {
 
     toast({
       title: "Template Downloaded",
-      description: "CSV template has been downloaded successfully.",
+      description: "Template (TSV) downloaded with a sample row.",
     });
   };
 
@@ -66,9 +90,12 @@ export const ExcelUpload: React.FC = () => {
         body: formData,
       });
 
-      const result = await response.json();
+      // try to parse JSON even on errors
+      let result: any = {};
+      try { result = await response.json(); } catch {}
+
       if (!response.ok) {
-        throw new Error(result.error || result.message || 'Upload failed');
+        throw new Error(result.error || result.message || `Upload failed (HTTP ${response.status})`);
       }
 
       toast({
@@ -76,9 +103,8 @@ export const ExcelUpload: React.FC = () => {
         description: result.message,
       });
 
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      // reset input
+      if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (error: any) {
       console.error('Upload error:', error);
       toast({
@@ -111,11 +137,11 @@ export const ExcelUpload: React.FC = () => {
           <CardContent className="space-y-4">
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
               <FileSpreadsheet className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-600 mb-4">Upload your CSV or Excel file</p>
+              <p className="text-gray-600 mb-4">Upload your CSV/TSV or Excel (.xlsx/.xls) file</p>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.xlsx,.xls"
+                accept=".csv,.tsv,.xlsx,.xls"
                 onChange={handleFileUpload}
                 className="hidden"
                 disabled={isProcessing}
@@ -134,10 +160,10 @@ export const ExcelUpload: React.FC = () => {
               <div className="text-sm text-blue-700">
                 <p className="font-medium">Important Notes:</p>
                 <ul className="list-disc list-inside mt-1 space-y-1">
-                  <li>Ensure columns match the template exactly.</li>
-                  <li>Use tab-separated values or Excel format.</li>
-                  <li>Date format for "timeline": YYYY-MM-DD</li>
-                  <li>Supported formats: CSV, Excel (.xlsx, .xls)</li>
+                  <li>Headers are case-insensitive and order doesn’t matter.</li>
+                  <li>Use tab-separated (TSV), CSV, or Excel format.</li>
+                  <li>Date format for "timeline": YYYY-MM-DD (or Excel date serial).</li>
+                  <li>Use “;” or “,” to separate multiple emails/files.</li>
                 </ul>
               </div>
             </div>
@@ -153,7 +179,7 @@ export const ExcelUpload: React.FC = () => {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-gray-600">
-              Download the template file with the required format and column headers.
+              Download a TSV template with headers and one example row.
             </p>
             <Button
               onClick={downloadTemplate}
@@ -161,7 +187,7 @@ export const ExcelUpload: React.FC = () => {
               className="w-full"
             >
               <Download className="h-4 w-4 mr-2" />
-              Download CSV Template
+              Download Template
             </Button>
           </CardContent>
         </Card>
@@ -169,7 +195,7 @@ export const ExcelUpload: React.FC = () => {
 
       <Card>
         <CardHeader>
-          <CardTitle>Required Format</CardTitle>
+          <CardTitle>Required Headers</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -197,13 +223,13 @@ export const ExcelUpload: React.FC = () => {
                   <TableCell>cxo@example.com</TableCell>
                   <TableCell>co-owner@example.com</TableCell>
                   <TableCell>2024-12-01</TableCell>
-                  <TableCell>Received</TableCell>
+                  <TableCell>Partially Received</TableCell>
                   <TableCell>Jan</TableCell>
-                  <TableCell>Feb</TableCell>
+                  <TableCell>Mar</TableCell>
                   <TableCell>Reviewed and verified</TableCell>
                   <TableCell>Medium operational risk</TableCell>
                   <TableCell>Follow-up required</TableCell>
-                  <TableCell>evidence.pdf</TableCell>
+                  <TableCell>evidence.pdf; policy.docx</TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -213,4 +239,3 @@ export const ExcelUpload: React.FC = () => {
     </div>
   );
 };
-

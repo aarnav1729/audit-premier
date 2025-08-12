@@ -13,21 +13,17 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Search, ArrowUpDown, Plus, Filter } from 'lucide-react';
+import { Search, ArrowUpDown, Plus, Filter, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { AuditIssue } from '@/types/audit';
 import { CreateAuditModal } from './CreateAuditModal';
 
-//const API_BASE_URL = `${window.location.origin}/api`;
-
-const API_BASE_URL = 'http://localhost:7723/api';
-
+const API_BASE_URL = "http://localhost:7723/api";
 
 interface AuditTableProps {
   auditIssues?: AuditIssue[];
   showCreateButton?: boolean;
   title?: string;
   actionColumn?: (issue: AuditIssue) => React.ReactNode;
-  //currentUserRole?: string;
 }
 
 export const AuditTable: React.FC<AuditTableProps> = ({
@@ -35,7 +31,6 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   showCreateButton = false,
   title = "Audit Issues",
   actionColumn,
-  //currentUserRole,
 }) => {
   const [issues, setIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,24 +64,73 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   };
 
   useEffect(() => {
+    if (auditIssues && auditIssues.length) {
+      setIssues(auditIssues);
+      setLoading(false);
+      return;
+    }
     fetchIssues();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const escapeRegExp = (s: string) =>
+    s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   const highlightText = (text: string, term: string) => {
     if (!term) return text;
-    const re = new RegExp(`(${term})`, 'gi');
-    return text.split(re).map((part, i) =>
-      re.test(part)
-        ? <mark key={i} className="highlight">{part}</mark>
-        : part
+    const safe = escapeRegExp(term);
+    const re = new RegExp(`(${safe})`, 'gi');
+    const parts = String(text ?? '').split(re);
+    return parts.map((part, i) =>
+      re.test(part) ? (
+        <mark key={i} className="bg-yellow-200 text-black rounded px-0.5">
+          {part}
+        </mark>
+      ) : (
+        <React.Fragment key={i}>{part}</React.Fragment>
+      )
     );
   };
+
+  const compare = (a: any, b: any) => {
+    // dates
+    if (typeof a === 'string' && typeof b === 'string') {
+      const aDate = Date.parse(a);
+      const bDate = Date.parse(b);
+      if (!isNaN(aDate) && !isNaN(bDate)) {
+        return aDate - bDate;
+      }
+      return a.localeCompare(b, undefined, { sensitivity: 'base' });
+    }
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    return String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' });
+  };
+
+  const handleSort = (field: keyof AuditIssue) => {
+    if (field === sortField) {
+      setSortDirection(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const getRiskBadgeColor = (r: string) =>
+    r === 'high' ? 'bg-red-500' :
+    r === 'medium' ? 'bg-yellow-500' :
+    r === 'low' ? 'bg-green-500' : 'bg-gray-500';
+
+  const getStatusBadgeColor = (s: string) =>
+    s === 'Received' ? 'bg-green-500' :
+    s === 'Partially Received' ? 'bg-yellow-400' :
+    s === 'Closed' ? 'bg-gray-600' :
+    'bg-orange-500';
 
   const filteredAndSorted = useMemo(() => {
     let out = issues.filter(issue => {
       const matchSearch = !searchTerm ||
         Object.values(issue).some(v =>
-          v?.toString().toLowerCase().includes(searchTerm.toLowerCase())
+          String(v ?? '').toLowerCase().includes(searchTerm.toLowerCase())
         );
       const matchStatus = filterStatus === 'all' || issue.currentStatus === filterStatus;
       const matchRisk = filterRisk === 'all' || issue.riskLevel === filterRisk;
@@ -96,11 +140,10 @@ export const AuditTable: React.FC<AuditTableProps> = ({
     });
 
     out.sort((a, b) => {
-      const aV = a[sortField];
-      const bV = b[sortField];
-      if (aV < bV) return sortDirection === 'asc' ? -1 : 1;
-      if (aV > bV) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
+      const aV = a[sortField] as any;
+      const bV = b[sortField] as any;
+      const base = compare(aV, bV);
+      return sortDirection === 'asc' ? base : -base;
     });
 
     return out;
@@ -109,8 +152,8 @@ export const AuditTable: React.FC<AuditTableProps> = ({
     filterStatus, filterRisk, filterFiscalYear, filterProcess
   ]);
 
-  /*const handleManualClosure = async (issueId: string) => {
-    if (!confirm("Are you sure you want to mark this issue as closed?")) return;
+  const handleManualClosure = async (issueId: string) => {
+    if (!window.confirm("Are you sure you want to mark this issue as closed?")) return;
 
     try {
       const res = await fetch(`${API_BASE_URL}/audit-issues/${issueId}/close`, {
@@ -124,32 +167,11 @@ export const AuditTable: React.FC<AuditTableProps> = ({
       console.error(err);
       alert("Failed to close audit issue.");
     }
-  };*/
-
-
-  const handleSort = (field: keyof AuditIssue) => {
-    if (field === sortField) {
-      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
-    }
   };
 
-  const getRiskBadgeColor = (r: string) =>
-    r === 'high' ? 'bg-red-500' :
-      r === 'medium' ? 'bg-yellow-500' :
-        r === 'low' ? 'bg-green-500' : 'bg-gray-500';
-
-  const getStatusBadgeColor = (s: string) =>
-    s === 'Received' ? 'bg-green-500' :
-      s === 'Partially Received' ? 'bg-yellow-400' :
-        'bg-orange-500';
-
-
   // unique lists for filters
-  const fiscalYears = Array.from(new Set(issues.map(i => i.fiscalYear)));
-  const processes = Array.from(new Set(issues.map(i => i.process)));
+  const fiscalYears = Array.from(new Set(issues.map(i => i.fiscalYear))).filter(Boolean);
+  const processes = Array.from(new Set(issues.map(i => i.process))).filter(Boolean);
 
   if (loading) return <div className="p-6 text-center">Loading audit issues…</div>;
   if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
@@ -157,18 +179,29 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   return (
     <Card className="w-full">
       <CardHeader>
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center gap-2 flex-wrap">
           <CardTitle className="text-xl font-semibold">{title}</CardTitle>
-          {showCreateButton && (
+          <div className="flex gap-2">
             <Button
-              onClick={() => setCreateModalOpen(true)}
-              className="bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600"
+              variant="outline"
+              onClick={fetchIssues}
+              title="Refresh"
             >
-              <Plus className="h-4 w-4 mr-2" />
-              Create New
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
             </Button>
-          )}
+            {showCreateButton && (
+              <Button
+                onClick={() => setCreateModalOpen(true)}
+                className="bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Create New
+              </Button>
+            )}
+          </div>
         </div>
+
         <div className="flex flex-wrap gap-4 items-center mt-4">
           <div className="relative flex-1 min-w-64">
             <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
@@ -185,12 +218,13 @@ export const AuditTable: React.FC<AuditTableProps> = ({
           <select
             value={filterStatus}
             onChange={e => setFilterStatus(e.target.value)}
-            className="border rounded p-2 w-40"
+            className="border rounded p-2 w-44"
           >
             <option value="all">All Status</option>
             <option value="Received">Received</option>
             <option value="Partially Received">Partially Received</option>
-
+            <option value="To Be Received">To Be Received</option>
+            <option value="Closed">Closed</option>
           </select>
 
           <select
@@ -269,14 +303,12 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                     Status <ArrowUpDown className="ml-1 h-3 w-3" />
                   </div>
                 </TableHead>
-                {actionColumn && <TableHead>Actions</TableHead>}
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
 
             <TableBody>
-              {filteredAndSorted.map(issue =>{
-                  console.log('Issue:', issue);
-                return (
+              {filteredAndSorted.map(issue => (
                 <TableRow key={issue.id} className="hover:bg-gray-50">
                   <TableCell className="font-medium">{issue.serialNumber}</TableCell>
                   <TableCell>{highlightText(issue.fiscalYear, searchTerm)}</TableCell>
@@ -305,18 +337,41 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                       {highlightText(issue.managementComment || '', searchTerm)}
                     </div>
                   </TableCell>
-                  <TableCell>{highlightText(issue.personResponsible, searchTerm)}</TableCell>
-                  <TableCell>{highlightText(issue.cxoResponsible, searchTerm)}
-                    {issue.coOwner && <div className="text-sm text-gray-500">Co-Owner: {highlightText(issue.coOwner, searchTerm)}</div>}
+                  <TableCell>
+                    {highlightText(issue.personResponsible, searchTerm)}
+                  </TableCell>
+                  <TableCell>
+                    {highlightText(issue.cxoResponsible, searchTerm)}
+                    {issue.coOwner && (
+                      <div className="text-sm text-gray-500">
+                        Co-Owner: {highlightText(issue.coOwner, searchTerm)}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge className={`${getStatusBadgeColor(issue.currentStatus)} text-white`}>
                       {issue.currentStatus}
                     </Badge>
                   </TableCell>
-                  {actionColumn && <TableCell>{actionColumn(issue)}</TableCell>}
+                  <TableCell>
+                    {actionColumn
+                      ? actionColumn(issue)
+                      : (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => handleManualClosure(issue.id)}
+                          disabled={issue.currentStatus === 'Closed'}
+                          title={issue.currentStatus === 'Closed' ? 'Already closed' : 'Mark as Closed'}
+                        >
+                          <CheckCircle2 className="h-4 w-4 mr-2" />
+                          Close
+                        </Button>
+                      )
+                    }
+                  </TableCell>
                 </TableRow>
-              )})}
+              ))}
             </TableBody>
           </Table>
 

@@ -22,7 +22,7 @@
 
 - **Frontend**: React, TailwindCSS, Lucide Icons, ShadCN UI
 - **Backend**: Express.js
-- **Database**: MySQL
+- **Database**: MSSQL
 - **Other**: Multer (file uploads), XLSX (parsing Excel), Microsoft Graph API
 
 ---

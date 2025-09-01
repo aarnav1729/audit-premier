@@ -35,7 +35,7 @@ interface CreateAuditModalProps {
   onClose: () => void;
 }
 
-const API_BASE_URL = "http://localhost:7723/api";
+const API_BASE_URL = `${window.location.origin}/api`;
 
 const FISCAL_YEARS = ["2022-23", "2023-24", "2024-25", "2025-26"];
 const PROCESSES = [
@@ -56,7 +56,7 @@ const PROCESSES = [
 ];
 const ENTITIES = ["PEL", "PSPT", "PEPPL", "PEIPL", "PEGEPL"];
 const RISK_LEVELS = ["high", "medium", "low"] as const;
-const STATUSES = ["Received", "Partially Received"] as const;
+const STATUSES = ["To Be Received", "Received", "Partially Received"] as const;
 
 export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({
   open,
@@ -202,7 +202,7 @@ const updatePersonAt = (idx: number, val: string) => {
         byEntityResponsibles: {},
         approver: [""],
         cxoResponsible: [""],
-        currentStatus: "Partially Received",
+        currentStatus: "To Be Received",
         riskAnnexureText: "",
         riskAnnexureFile: null,
         actionRequired: "",

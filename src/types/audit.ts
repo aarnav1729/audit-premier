@@ -1,5 +1,10 @@
-type AuditStatus = 'Received' | 'Partially Received' | 'In Progress' | 'Resolved' | 'Closed';
-
+type AuditStatus =
+  | "To Be Received"
+  | "Received"
+  | "Partially Received"
+  | "In Progress"
+  | "Resolved"
+  | "Closed";
 
 export interface AuditIssue {
   id: string;
@@ -9,7 +14,7 @@ export interface AuditIssue {
   process: string;
   entityCovered: string;
   observation: string;
-  riskLevel: 'high' | 'medium' | 'low';
+  riskLevel: "high" | "medium" | "low";
   recommendation: string;
   managementComment: string;
   personResponsible: string;
@@ -18,7 +23,7 @@ export interface AuditIssue {
   timeline: string;
   currentStatus: AuditStatus;
   evidenceReceived: Evidence[];
-  evidenceStatus?: 'Insufficient' | 'Accepted';
+  evidenceStatus?: 'Insufficient' | 'Accepted' | 'Partially Accepted';
   reviewComments?: string;
   risk: string;
   actionRequired: string;
@@ -43,7 +48,7 @@ export interface Evidence {
 
 export interface User {
   email: string;
-  role: 'auditor' | 'user' | 'approver';
+  role: "auditor" | "user" | "approver";
   name: string;
 }
 
@@ -54,5 +59,5 @@ export interface Comment {
   userName: string;
   content: string;
   createdAt: string;
-  type: 'review' | 'general';
+  type: "review" | "general";
 }

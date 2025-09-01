@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Eye, MessageSquare, CheckCircle, AlertCircle } from 'lucide-react';
+import { Eye, MessageSquare, CheckCircle, AlertCircle, Pencil, Lock } from 'lucide-react';
 import { AuditTable } from '@/components/AuditTable';
 import { Analytics } from '@/components/Analytics';
 import { EvidenceViewer } from '@/components/EvidenceViewer';
@@ -17,10 +17,9 @@ import { useAuditStorage } from '@/hooks/useAuditStorage';
 import { useAuth } from '@/hooks/useAuth';
 import { AuditIssue } from '@/types/audit';
 import { toast } from '@/hooks/use-toast';
+import { EditAuditModal } from '@/components/EditAuditModal';
 
-
-const API_BASE_URL = 'http://localhost:7723/api';
-
+const API_BASE_URL = `${window.location.origin}/api`;
 
 export const AuditorDashboard: React.FC = () => {
   const { auditIssues, updateAuditIssue, addComment } = useAuditStorage();
@@ -34,16 +33,43 @@ export const AuditorDashboard: React.FC = () => {
   const [evidenceStatus, setEvidenceStatus] = useState<'Insufficient' | 'Accepted' | 'Partially Accepted'>('Accepted');
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
+  // NEW: edit state
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [issueToEdit, setIssueToEdit] = useState<AuditIssue | null>(null);
+
   const viewEvidence = (issue: AuditIssue) => {
     setSelectedEvidence(issue.evidenceReceived);
     setEvidenceModalOpen(true);
   };
 
   const openReviewModal = (issue: AuditIssue) => {
+    const locked = ((issue as any).isLocked === 1 || (issue as any).isLocked === true) || issue.evidenceStatus === 'Accepted';
+    if (locked) {
+      toast({
+        title: "Locked",
+        description: "This issue is locked after acceptance. Review cannot be modified.",
+        variant: "destructive",
+      });
+      return;
+    }
     setSelectedIssue(issue);
     setReviewComments(issue.reviewComments || '');
     setEvidenceStatus(issue.evidenceStatus || 'Accepted');
     setReviewModalOpen(true);
+  };
+
+  const openEditModal = (issue: AuditIssue) => {
+    const locked = ((issue as any).isLocked === 1 || (issue as any).isLocked === true) || issue.evidenceStatus === 'Accepted';
+    if (locked) {
+      toast({
+        title: "Locked",
+        description: "This issue is locked after acceptance. Editing is disabled.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIssueToEdit(issue);
+    setEditModalOpen(true);
   };
 
   const submitReview = async () => {
@@ -74,8 +100,9 @@ export const AuditorDashboard: React.FC = () => {
       updateAuditIssue(updated.id, {
         evidenceStatus: updated.evidenceStatus,
         reviewComments: updated.reviewComments,
-        currentStatus: updated.currentStatus
-      });
+        currentStatus: updated.currentStatus,
+        ...(updated as any).isLocked !== undefined ? { isLocked: (updated as any).isLocked } : {}
+      } as any);
 
       // Add a comment record
       addComment({
@@ -107,55 +134,79 @@ export const AuditorDashboard: React.FC = () => {
     }
   };
 
-  const getActionColumn = (issue: AuditIssue) => (
-    <div className="flex space-x-2">
-      {issue.evidenceReceived.length > 0 && (
+  const getActionColumn = (issue: AuditIssue) => {
+    const locked = ((issue as any).isLocked === 1 || (issue as any).isLocked === true) || issue.evidenceStatus === 'Accepted';
+
+    return (
+      <div className="flex flex-wrap gap-2 items-center">
+        {issue.evidenceReceived.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => viewEvidence(issue)}
+            className="flex items-center space-x-1"
+          >
+            <Eye className="h-4 w-4" />
+            <span>View</span>
+          </Button>
+        )}
+        {issue.evidenceReceived.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => openReviewModal(issue)}
+            className="flex items-center space-x-1"
+            disabled={locked}
+            title={locked ? "Locked after acceptance" : "Review"}
+          >
+            {issue.evidenceStatus === 'Accepted' ? (
+              <CheckCircle className="h-4 w-4 text-green-500" />
+            ) : issue.evidenceStatus === 'Partially Accepted' ? (
+              <AlertCircle className="h-4 w-4 text-yellow-500" />
+            ) : issue.evidenceStatus === 'Insufficient' ? (
+              <AlertCircle className="h-4 w-4 text-red-500" />
+            ) : (
+              <MessageSquare className="h-4 w-4" />
+            )}
+            <span>Review</span>
+          </Button>
+        )}
+
+        {/* Edit button disabled when locked */}
         <Button
           variant="outline"
           size="sm"
-          onClick={() => viewEvidence(issue)}
+          onClick={() => openEditModal(issue)}
           className="flex items-center space-x-1"
+          disabled={locked}
+          title={locked ? "Locked after acceptance" : "Edit issue"}
         >
-          <Eye className="h-4 w-4" />
-          <span>View</span>
+          <Pencil className="h-4 w-4" />
+          <span>Edit</span>
         </Button>
-      )}
-      {issue.evidenceReceived.length > 0 && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => openReviewModal(issue)}
-          className="flex items-center space-x-1"
-        >
-          {issue.evidenceStatus === 'Accepted' ? (
-            <CheckCircle className="h-4 w-4 text-green-500" />
-          ) : issue.evidenceStatus === 'Partially Accepted' ? (
-            <AlertCircle className="h-4 w-4 text-yellow-500" />
-          ) : issue.evidenceStatus === 'Insufficient' ? (
-            <AlertCircle className="h-4 w-4 text-red-500" />
-          ) : (
-            <MessageSquare className="h-4 w-4" />
-          )}
 
-          <span>Review</span>
-        </Button>
-      )}
-      {issue.evidenceStatus && (
-        <Badge
-          className={
-            issue.evidenceStatus === 'Accepted'
-              ? 'bg-green-500'
-              : issue.evidenceStatus === 'Partially Accepted'
-                ? 'bg-yellow-500'
-                : 'bg-red-500'
-          }
-        >
-          {issue.evidenceStatus}
-        </Badge>
-      )}
+        {locked && (
+          <Badge className="bg-gray-700 inline-flex items-center gap-1">
+            <Lock className="h-3 w-3" /> Locked
+          </Badge>
+        )}
 
-    </div>
-  );
+        {issue.evidenceStatus && (
+          <Badge
+            className={
+              issue.evidenceStatus === 'Accepted'
+                ? 'bg-green-500'
+                : issue.evidenceStatus === 'Partially Accepted'
+                  ? 'bg-yellow-500'
+                  : 'bg-red-500'
+            }
+          >
+            {issue.evidenceStatus}
+          </Badge>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -166,12 +217,17 @@ export const AuditorDashboard: React.FC = () => {
         </div>
       </div>
 
-      <Tabs defaultValue="audit-issues" className="space-y-4">
+      {/* Analytics first, then Audit Issues, then Excel Upload */}
+      <Tabs defaultValue="analytics" className="space-y-4">
         <TabsList className="grid w-fit grid-cols-3">
+          <TabsTrigger value="analytics">Analytics</TabsTrigger>
           <TabsTrigger value="audit-issues">Audit Issues</TabsTrigger>
           <TabsTrigger value="excel-upload">Excel Upload</TabsTrigger>
-          <TabsTrigger value="analytics">Analytics</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="analytics" className="space-y-4">
+          <Analytics title="Audit Analytics Dashboard" />
+        </TabsContent>
 
         <TabsContent value="audit-issues" className="space-y-4">
           <AuditTable
@@ -179,16 +235,11 @@ export const AuditorDashboard: React.FC = () => {
             showCreateButton={true}
             title="All Audit Issues"
             actionColumn={getActionColumn}
-          //currentUserRole='Auditor'
           />
         </TabsContent>
 
         <TabsContent value="excel-upload" className="space-y-4">
           <ExcelUpload />
-        </TabsContent>
-
-        <TabsContent value="analytics" className="space-y-4">
-          <Analytics title="Audit Analytics Dashboard" />
         </TabsContent>
       </Tabs>
 
@@ -252,6 +303,21 @@ export const AuditorDashboard: React.FC = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* NEW: Edit Audit Issue Modal */}
+      <EditAuditModal
+        open={editModalOpen}
+        onClose={() => setEditModalOpen(false)}
+        issue={issueToEdit}
+        onSaved={(updated) => {
+          // Merge into local storage/context
+          updateAuditIssue(updated.id, updated as any);
+          toast({
+            title: "Issue Updated",
+            description: `Issue #${updated.serialNumber} has been saved.`,
+          });
+        }}
+      />
     </div>
   );
 };

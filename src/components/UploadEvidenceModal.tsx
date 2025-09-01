@@ -15,7 +15,7 @@ import { toast } from "@/hooks/use-toast";
 import { Evidence, AuditIssue } from "@/types/audit";
 import { useAuditStorage } from "@/hooks/useAuditStorage";
 
-const API_BASE_URL = 'http://localhost:7723/api';
+const API_BASE_URL = `${window.location.origin}/api`;
 
 
 interface UploadEvidenceModalProps {

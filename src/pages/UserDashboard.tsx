@@ -28,6 +28,11 @@ export const UserDashboard: React.FC = () => {
   });
 
   const openUploadModal = (issueId: string) => {
+    // Extra safety: don't open if the issue is already accepted (locked)
+    const issue = auditIssues.find((i) => i.id === issueId);
+    if (issue && issue.evidenceStatus === "Accepted") {
+      return;
+    }
     setSelectedIssueId(issueId);
     setUploadModalOpen(true);
   };
@@ -39,7 +44,7 @@ export const UserDashboard: React.FC = () => {
 
   const handleEvidenceUpload = (
     evidence: Evidence[],
-    textEvidence?: string
+    _textEvidence?: string
   ) => {
     const issue = auditIssues.find((i) => i.id === selectedIssueId);
     if (!issue) return;
@@ -52,63 +57,69 @@ export const UserDashboard: React.FC = () => {
     });
   };
 
-  const getActionColumn = (issue: AuditIssue) => (
-    <div className="flex space-x-2 items-center">
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => openUploadModal(issue.id)}
-        className="flex items-center space-x-1"
-      >
-        <Upload className="h-4 w-4" />
-        <span>Upload Evidence</span>
-      </Button>
+  const getActionColumn = (issue: AuditIssue) => {
+    const uploadDisabled = issue.evidenceStatus === "Accepted";
 
-      {issue.evidenceReceived.length > 0 && (
+    return (
+      <div className="flex space-x-2 items-center">
         <Button
           variant="outline"
           size="sm"
-          onClick={() => viewEvidence(issue)}
+          onClick={() => openUploadModal(issue.id)}
           className="flex items-center space-x-1"
+          disabled={uploadDisabled}
+          title={uploadDisabled ? "Evidence accepted — further uploads disabled" : "Upload Evidence"}
         >
-          <Eye className="h-4 w-4" />
-          <span>View Evidence</span>
+          <Upload className="h-4 w-4" />
+          <span>Upload Evidence</span>
         </Button>
-      )}
 
-      {issue.evidenceStatus && (
-        <div className="flex items-center space-x-2">
-          <Badge
-            className={
-              issue.evidenceStatus === "Accepted"
-                ? "bg-green-500"
-                : "bg-red-500"
-            }
+        {issue.evidenceReceived.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => viewEvidence(issue)}
+            className="flex items-center space-x-1"
           >
-            {issue.evidenceStatus === "Accepted" ? (
-              <CheckCircle className="h-3 w-3 mr-1" />
-            ) : (
-              <AlertCircle className="h-3 w-3 mr-1" />
-            )}
-            {issue.evidenceStatus}
-          </Badge>
-        </div>
-      )}
+            <Eye className="h-4 w-4" />
+            <span>View Evidence</span>
+          </Button>
+        )}
 
-      {issue.reviewComments && (
-        <div className="max-w-xs">
-          <p
-            className="text-xs text-gray-600 italic"
-            title={issue.reviewComments}
-          >
-            {issue.reviewComments.length > 30
-              ? `${issue.reviewComments.substring(0, 30)}...`
-              : issue.reviewComments}
-          </p>
-        </div>
-      )}
-    </div>
-  );
+        {issue.evidenceStatus && (
+          <div className="flex items-center space-x-2">
+            <Badge
+              className={
+                issue.evidenceStatus === "Accepted"
+                  ? "bg-green-500"
+                  : "bg-red-500"
+              }
+            >
+              {issue.evidenceStatus === "Accepted" ? (
+                <CheckCircle className="h-3 w-3 mr-1" />
+              ) : (
+                <AlertCircle className="h-3 w-3 mr-1" />
+              )}
+              {issue.evidenceStatus}
+            </Badge>
+          </div>
+        )}
+
+        {issue.reviewComments && (
+          <div className="max-w-xs">
+            <p
+              className="text-xs text-gray-600 italic"
+              title={issue.reviewComments}
+            >
+              {issue.reviewComments.length > 30
+                ? `${issue.reviewComments.substring(0, 30)}...`
+                : issue.reviewComments}
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="container mx-auto p-6 space-y-6">

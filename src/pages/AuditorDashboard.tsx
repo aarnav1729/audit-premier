@@ -1,23 +1,42 @@
 // root/src/pages/AuditorDashboard.tsx
 
-import React, { useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Eye, MessageSquare, CheckCircle, AlertCircle, Pencil, Lock } from 'lucide-react';
-import { AuditTable } from '@/components/AuditTable';
-import { Analytics } from '@/components/Analytics';
-import { EvidenceViewer } from '@/components/EvidenceViewer';
-import { ExcelUpload } from '@/components/ExcelUpload';
-import { useAuditStorage } from '@/hooks/useAuditStorage';
-import { useAuth } from '@/hooks/useAuth';
-import { AuditIssue } from '@/types/audit';
-import { toast } from '@/hooks/use-toast';
-import { EditAuditModal } from '@/components/EditAuditModal';
+import React, { useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Eye,
+  MessageSquare,
+  CheckCircle,
+  AlertCircle,
+  Pencil,
+  Lock,
+} from "lucide-react";
+import { AuditTable } from "@/components/AuditTable";
+import { Analytics } from "@/components/Analytics";
+import { EvidenceViewer } from "@/components/EvidenceViewer";
+import { ExcelUpload } from "@/components/ExcelUpload";
+import { useAuditStorage } from "@/hooks/useAuditStorage";
+import { useAuth } from "@/hooks/useAuth";
+import { AuditIssue } from "@/types/audit";
+//import { toast } from "@/components/ui/use-toast";
+
+import { EditAuditModal } from "@/components/EditAuditModal";
 
 const API_BASE_URL = `${window.location.origin}/api`;
 
@@ -29,8 +48,10 @@ export const AuditorDashboard: React.FC = () => {
   const [selectedEvidence, setSelectedEvidence] = useState<any[]>([]);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<AuditIssue | null>(null);
-  const [reviewComments, setReviewComments] = useState('');
-  const [evidenceStatus, setEvidenceStatus] = useState<'Insufficient' | 'Accepted' | 'Partially Accepted'>('Accepted');
+  const [reviewComments, setReviewComments] = useState("");
+  const [evidenceStatus, setEvidenceStatus] = useState<
+    "Insufficient" | "Accepted" | "Partially Accepted"
+  >("Accepted");
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
   // NEW: edit state
@@ -43,29 +64,37 @@ export const AuditorDashboard: React.FC = () => {
   };
 
   const openReviewModal = (issue: AuditIssue) => {
-    const locked = ((issue as any).isLocked === 1 || (issue as any).isLocked === true) || issue.evidenceStatus === 'Accepted';
+    const locked =
+      (issue as any).isLocked === 1 ||
+      (issue as any).isLocked === true ||
+      issue.evidenceStatus === "Accepted";
     if (locked) {
-      toast({
-        title: "Locked",
-        description: "This issue is locked after acceptance. Review cannot be modified.",
-        variant: "destructive",
-      });
+      //toast({
+      //  title: "Locked",
+      //  description:
+      //    "This issue is locked after acceptance. Review cannot be modified.",
+      //  variant: "destructive",
+      //});
       return;
     }
     setSelectedIssue(issue);
-    setReviewComments(issue.reviewComments || '');
-    setEvidenceStatus(issue.evidenceStatus || 'Accepted');
+    setReviewComments(issue.reviewComments || "");
+    setEvidenceStatus(issue.evidenceStatus || "Accepted");
     setReviewModalOpen(true);
   };
 
   const openEditModal = (issue: AuditIssue) => {
-    const locked = ((issue as any).isLocked === 1 || (issue as any).isLocked === true) || issue.evidenceStatus === 'Accepted';
+    const locked =
+      (issue as any).isLocked === 1 ||
+      (issue as any).isLocked === true ||
+      issue.evidenceStatus === "Accepted";
     if (locked) {
-      toast({
-        title: "Locked",
-        description: "This issue is locked after acceptance. Editing is disabled.",
-        variant: "destructive",
-      });
+     // toast({
+     //   title: "Locked",
+     //   description:
+      //    "This issue is locked after acceptance. Editing is disabled.",
+     //   variant: "destructive",
+     // });
       return;
     }
     setIssueToEdit(issue);
@@ -81,19 +110,19 @@ export const AuditorDashboard: React.FC = () => {
       const res = await fetch(
         `${API_BASE_URL}/audit-issues/${selectedIssue.id}/review`,
         {
-          method: 'PUT',
+          method: "PUT",
           credentials: "include",
-          headers: { 'Content-Type': 'application/json' },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             evidenceStatus,
-            reviewComments
-          })
+            reviewComments,
+          }),
         }
       );
 
       const updated: AuditIssue & { error?: string } = await res.json();
       if (!res.ok) {
-        throw new Error(updated.error || 'Failed to submit review');
+        throw new Error(updated.error || "Failed to submit review");
       }
 
       // Update local context
@@ -101,41 +130,46 @@ export const AuditorDashboard: React.FC = () => {
         evidenceStatus: updated.evidenceStatus,
         reviewComments: updated.reviewComments,
         currentStatus: updated.currentStatus,
-        ...(updated as any).isLocked !== undefined ? { isLocked: (updated as any).isLocked } : {}
+        ...((updated as any).isLocked !== undefined
+          ? { isLocked: (updated as any).isLocked }
+          : {}),
       } as any);
 
       // Add a comment record
       addComment({
         auditIssueId: updated.id,
-        userId: user?.email || '',
-        userName: user?.name || '',
+        userId: user?.email || "",
+        userName: user?.name || "",
         content: `Evidence marked as ${updated.evidenceStatus}. ${updated.reviewComments}`,
-        type: 'review'
+        type: "review",
       });
 
-      toast({
-        title: "Review Submitted",
-        description: `Evidence has been marked as ${updated.evidenceStatus.toLowerCase()}.`,
-      });
+     // toast({
+     //   title: "Review Submitted",
+     //   description: `Evidence has been marked as ${updated.evidenceStatus.toLowerCase()}.`,
+     // });
 
       // Reset modal state
       setReviewModalOpen(false);
       setSelectedIssue(null);
-      setReviewComments('');
+      setReviewComments("");
     } catch (err: any) {
-      console.error('Review submission error:', err);
-      toast({
-        title: "Error Submitting Review",
-        description: err.message || 'Please try again.',
-        variant: "destructive",
-      });
+      console.error("Review submission error:", err);
+      //toast({
+       // title: "Error Submitting Review",
+       // description: err.message || "Please try again.",
+       // variant: "destructive",
+     // });
     } finally {
       setIsSubmittingReview(false);
     }
   };
 
   const getActionColumn = (issue: AuditIssue) => {
-    const locked = ((issue as any).isLocked === 1 || (issue as any).isLocked === true) || issue.evidenceStatus === 'Accepted';
+    const locked =
+      (issue as any).isLocked === 1 ||
+      (issue as any).isLocked === true ||
+      issue.evidenceStatus === "Accepted";
 
     return (
       <div className="flex flex-wrap gap-2 items-center">
@@ -159,11 +193,11 @@ export const AuditorDashboard: React.FC = () => {
             disabled={locked}
             title={locked ? "Locked after acceptance" : "Review"}
           >
-            {issue.evidenceStatus === 'Accepted' ? (
+            {issue.evidenceStatus === "Accepted" ? (
               <CheckCircle className="h-4 w-4 text-green-500" />
-            ) : issue.evidenceStatus === 'Partially Accepted' ? (
+            ) : issue.evidenceStatus === "Partially Accepted" ? (
               <AlertCircle className="h-4 w-4 text-yellow-500" />
-            ) : issue.evidenceStatus === 'Insufficient' ? (
+            ) : issue.evidenceStatus === "Insufficient" ? (
               <AlertCircle className="h-4 w-4 text-red-500" />
             ) : (
               <MessageSquare className="h-4 w-4" />
@@ -194,11 +228,11 @@ export const AuditorDashboard: React.FC = () => {
         {issue.evidenceStatus && (
           <Badge
             className={
-              issue.evidenceStatus === 'Accepted'
-                ? 'bg-green-500'
-                : issue.evidenceStatus === 'Partially Accepted'
-                  ? 'bg-yellow-500'
-                  : 'bg-red-500'
+              issue.evidenceStatus === "Accepted"
+                ? "bg-green-500"
+                : issue.evidenceStatus === "Partially Accepted"
+                ? "bg-yellow-500"
+                : "bg-red-500"
             }
           >
             {issue.evidenceStatus}
@@ -212,8 +246,12 @@ export const AuditorDashboard: React.FC = () => {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Auditor Dashboard</h1>
-          <p className="text-gray-600 mt-1">Manage audit issues and review evidence</p>
+          <h1 className="text-3xl font-bold text-gray-900">
+            Auditor Dashboard
+          </h1>
+          <p className="text-gray-600 mt-1">
+            Manage audit issues and review evidence
+          </p>
         </div>
       </div>
 
@@ -263,7 +301,11 @@ export const AuditorDashboard: React.FC = () => {
               <Label>Evidence Status</Label>
               <Select
                 value={evidenceStatus}
-                onValueChange={(value) => setEvidenceStatus(value as 'Accepted' | 'Insufficient' | 'Partially Accepted')}
+                onValueChange={(value) =>
+                  setEvidenceStatus(
+                    value as "Accepted" | "Insufficient" | "Partially Accepted"
+                  )
+                }
                 disabled={isSubmittingReview}
               >
                 <SelectTrigger>
@@ -271,7 +313,9 @@ export const AuditorDashboard: React.FC = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="Accepted">Accepted</SelectItem>
-                  <SelectItem value="Partially Accepted">Partially Accepted</SelectItem>
+                  <SelectItem value="Partially Accepted">
+                    Partially Accepted
+                  </SelectItem>
                   <SelectItem value="Insufficient">Insufficient</SelectItem>
                 </SelectContent>
               </Select>
@@ -281,7 +325,7 @@ export const AuditorDashboard: React.FC = () => {
               <Label>Review Comments</Label>
               <Textarea
                 value={reviewComments}
-                onChange={e => setReviewComments(e.target.value)}
+                onChange={(e) => setReviewComments(e.target.value)}
                 placeholder="Add your review comments..."
                 rows={4}
                 disabled={isSubmittingReview}
@@ -289,7 +333,11 @@ export const AuditorDashboard: React.FC = () => {
             </div>
 
             <div className="flex justify-end space-x-2">
-              <Button variant="outline" onClick={() => setReviewModalOpen(false)} disabled={isSubmittingReview}>
+              <Button
+                variant="outline"
+                onClick={() => setReviewModalOpen(false)}
+                disabled={isSubmittingReview}
+              >
                 Cancel
               </Button>
               <Button
@@ -297,7 +345,7 @@ export const AuditorDashboard: React.FC = () => {
                 className="bg-gradient-to-r from-blue-500 to-green-500"
                 disabled={isSubmittingReview}
               >
-                {isSubmittingReview ? 'Submitting...' : 'Submit Review'}
+                {isSubmittingReview ? "Submitting..." : "Submit Review"}
               </Button>
             </div>
           </div>
@@ -312,10 +360,10 @@ export const AuditorDashboard: React.FC = () => {
         onSaved={(updated) => {
           // Merge into local storage/context
           updateAuditIssue(updated.id, updated as any);
-          toast({
-            title: "Issue Updated",
-            description: `Issue #${updated.serialNumber} has been saved.`,
-          });
+          //toast({
+           // title: "Issue Updated",
+            //description: `Issue #${updated.serialNumber} has been saved.`,
+         // });
         }}
       />
     </div>

@@ -148,6 +148,15 @@ function toAbsUrl(p?: string | null) {
   return `${window.location.origin}/${cleaned}`;
 }
 
+// NEW: derive calendar quarter from Date/string (Q1–Q4). Fallback to "—" if invalid.
+function getQuarterLabel(d: string | Date | undefined | null): string {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return "—";
+  const q = Math.floor(dt.getMonth() / 3) + 1; // 0-2 => Q1, 3-5 => Q2, etc.
+  return `Q${q}`;
+}
+
 export const AuditTable: React.FC<AuditTableProps> = ({
   auditIssues,
   showCreateButton = false,
@@ -194,7 +203,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
       console.error(err);
       setError("Failed to load audit issues.");
     } finally {
-           setLoading(false);
+      setLoading(false);
     }
   };
 
@@ -747,7 +756,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                   className="sticky top-0 z-30 bg-white cursor-pointer"
                 >
                   <div className="flex items-center">
-                    Date <ArrowUpDown className="ml-1 h-3 w-3" />
+                    Quarter <ArrowUpDown className="ml-1 h-3 w-3" />
                   </div>
                 </TableHead>
                 <TableHead
@@ -853,10 +862,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                       {highlightText(issue.fiscalYear, searchTerm)}
                     </TableCell>
                     <TableCell>
-                      {highlightText(
-                        new Date(issue.date).toLocaleDateString(),
-                        searchTerm
-                      )}
+                      {highlightText(getQuarterLabel(issue.date), searchTerm)}
                     </TableCell>
                     <TableCell>
                       {highlightText(issue.process, searchTerm)}

@@ -1,18 +1,24 @@
-import React, { useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Eye, MessageSquare } from 'lucide-react';
-import { AuditTable } from '@/components/AuditTable';
-import { Analytics } from '@/components/Analytics';
-import { EvidenceViewer } from '@/components/EvidenceViewer';
-import { useAuditStorage } from '@/hooks/useAuditStorage';
-import { useAuth } from '@/hooks/useAuth';
-import { AuditIssue, Evidence } from '@/types/audit';
-import { toast } from '@/hooks/use-toast';
+import React, { useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Eye, MessageSquare } from "lucide-react";
+import { AuditTable } from "@/components/AuditTable";
+import { Analytics } from "@/components/Analytics";
+import { EvidenceViewer } from "@/components/EvidenceViewer";
+import { useAuditStorage } from "@/hooks/useAuditStorage";
+import { useAuth } from "@/hooks/useAuth";
+import { AuditIssue, Evidence } from "@/types/audit";
+import { toast } from '@/components/ui/use-toast';
+
 
 export const ApproverDashboard: React.FC = () => {
   const { auditIssues, addComment } = useAuditStorage();
@@ -21,11 +27,12 @@ export const ApproverDashboard: React.FC = () => {
   const [selectedEvidence, setSelectedEvidence] = useState<Evidence[]>([]);
   const [commentModalOpen, setCommentModalOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<AuditIssue | null>(null);
-  const [comment, setComment] = useState('');
+  const [comment, setComment] = useState("");
 
   // Filter issues where user is CXO responsible or approver
-  const approverIssues = auditIssues.filter(issue => 
-    issue.cxoResponsible === user?.email || issue.approver === user?.email
+  const approverIssues = auditIssues.filter(
+    (issue) =>
+      issue.cxoResponsible === user?.email || issue.approver === user?.email
   );
 
   const viewEvidence = (issue: AuditIssue) => {
@@ -35,7 +42,7 @@ export const ApproverDashboard: React.FC = () => {
 
   const openCommentModal = (issue: AuditIssue) => {
     setSelectedIssue(issue);
-    setComment('');
+    setComment("");
     setCommentModalOpen(true);
   };
 
@@ -44,10 +51,10 @@ export const ApproverDashboard: React.FC = () => {
 
     addComment({
       auditIssueId: selectedIssue.id,
-      userId: user?.email || '',
-      userName: user?.name || '',
+      userId: user?.email || "",
+      userName: user?.name || "",
       content: comment,
-      type: 'general'
+      type: "general",
     });
 
     toast({
@@ -57,7 +64,7 @@ export const ApproverDashboard: React.FC = () => {
 
     setCommentModalOpen(false);
     setSelectedIssue(null);
-    setComment('');
+    setComment("");
   };
 
   const getActionColumn = (issue: AuditIssue) => (
@@ -73,7 +80,7 @@ export const ApproverDashboard: React.FC = () => {
           <span>View Evidence</span>
         </Button>
       )}
-      
+
       <Button
         variant="outline"
         size="sm"
@@ -83,9 +90,13 @@ export const ApproverDashboard: React.FC = () => {
         <MessageSquare className="h-4 w-4" />
         <span>Add Comment</span>
       </Button>
-      
+
       {issue.evidenceStatus && (
-        <Badge className={issue.evidenceStatus === 'Accepted' ? 'bg-green-500' : 'bg-red-500'}>
+        <Badge
+          className={
+            issue.evidenceStatus === "Accepted" ? "bg-green-500" : "bg-red-500"
+          }
+        >
           {issue.evidenceStatus}
         </Badge>
       )}
@@ -96,12 +107,16 @@ export const ApproverDashboard: React.FC = () => {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Approver Dashboard</h1>
+          <h1 className="text-3xl font-bold text-gray-900">
+            Approver Dashboard
+          </h1>
           <p className="text-gray-600 mt-1">Review and approve audit issues</p>
         </div>
         <div className="text-right">
           <p className="text-sm text-gray-500">Issues for Review</p>
-          <p className="text-2xl font-bold text-purple-600">{approverIssues.length}</p>
+          <p className="text-2xl font-bold text-purple-600">
+            {approverIssues.length}
+          </p>
         </div>
       </div>
 
@@ -111,7 +126,7 @@ export const ApproverDashboard: React.FC = () => {
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
         </TabsList>
 
-       <TabsContent value="audit-issues" className="space-y-4">
+        <TabsContent value="audit-issues" className="space-y-4">
           <AuditTable
             auditIssues={auditIssues}
             title="Issues for Review & Approval"
@@ -138,7 +153,7 @@ export const ApproverDashboard: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Add Comment</DialogTitle>
           </DialogHeader>
-          
+
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Your Comment</Label>
@@ -151,11 +166,14 @@ export const ApproverDashboard: React.FC = () => {
             </div>
 
             <div className="flex justify-end space-x-2">
-              <Button variant="outline" onClick={() => setCommentModalOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setCommentModalOpen(false)}
+              >
                 Cancel
               </Button>
-              <Button 
-                onClick={submitComment} 
+              <Button
+                onClick={submitComment}
                 disabled={!comment.trim()}
                 className="bg-gradient-to-r from-blue-500 to-green-500"
               >

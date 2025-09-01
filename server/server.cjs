@@ -241,6 +241,20 @@ const convertExcelDate = (excelDate) => {
   return jsDate.toISOString().split("T")[0];
 };
 
+// Reset identity to 1 when the table is empty (next insert becomes 1)
+async function reseedSerialIfEmpty() {
+  try {
+    await auditPool.request().query(`
+      IF NOT EXISTS (SELECT 1 FROM dbo.AuditIssues)
+      BEGIN
+        DBCC CHECKIDENT ('dbo.AuditIssues', RESEED, 0) WITH NO_INFOMSGS;
+      END
+    `);
+  } catch (e) {
+    console.warn("reseedSerialIfEmpty warning:", e?.message || e);
+  }
+}
+
 const normStatus = (s) => {
   if (Array.isArray(s)) s = s[0] ?? "";
   const status = String(s ?? "")
@@ -482,6 +496,7 @@ app.get("/api/resolve-role", async (req, res) => {
 /* ----------------------- CREATE (single, from UI modal) --------------------- */
 app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
   try {
+    await reseedSerialIfEmpty();
     const body = req.body;
 
     const toList = (v) => (Array.isArray(v) ? v.filter(Boolean) : v ? [v] : []);
@@ -624,6 +639,7 @@ app.post(
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     try {
+      await reseedSerialIfEmpty();
       const ext = path.extname(req.file.originalname).toLowerCase();
       let workbook;
       if (ext === ".csv") {

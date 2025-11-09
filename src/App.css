@@ -1,8 +1,6 @@
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  /* These properties were conflicting with the dashboard layout */
+  /* and have been removed. */
 }
 
 .logo {

@@ -1,15 +1,20 @@
 import React, { useMemo, useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
 export type DocItem = {
   id?: string | number;
   name: string;
-  path?: string | null;     // e.g. "uploads/abc.pdf"
-  type?: string | null;     // mime type if known
+  path?: string | null; // e.g. "uploads/abc.pdf"
+  type?: string | null; // mime type if known
   size?: number | null;
   uploadedAt?: string | null;
-  content?: string | null;  // for text entries (comments/justification)
+  content?: string | null; // for text entries (comments/justification)
   fileName?: string | null; // for evidence records where "fileName" exists
   fileType?: string | null; // for evidence records where "fileType" exists
 };
@@ -19,6 +24,10 @@ type Props = {
   onClose: () => void;
   title?: string;
   files: DocItem[];
+  /** When true, shows a 'Remove Evidence' button for evidence items only */
+  canDeleteEvidence?: boolean;
+  /** Called when delete is confirmed; receives the selected item */
+  onDeleteEvidence?: (doc: DocItem) => Promise<void> | void;
 };
 
 function toAbsUrl(p?: string | null) {
@@ -31,7 +40,9 @@ function toAbsUrl(p?: string | null) {
 function isImage(mime?: string | null, name?: string | null) {
   if (mime && mime.startsWith("image/")) return true;
   const n = (name || "").toLowerCase();
-  return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].some((ext) => n.endsWith(ext));
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].some((ext) =>
+    n.endsWith(ext)
+  );
 }
 
 function isPdf(mime?: string | null, name?: string | null) {
@@ -40,7 +51,14 @@ function isPdf(mime?: string | null, name?: string | null) {
   return n.endsWith(".pdf");
 }
 
-export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files", files }) => {
+export const DocumentViewer: React.FC<Props> = ({
+  open,
+  onClose,
+  title = "Files",
+  files,
+  canDeleteEvidence = false,
+  onDeleteEvidence,
+}) => {
   const normalized = useMemo(() => {
     // Normalize different shapes into DocItem
     return (files || []).map((f, i) => {
@@ -55,6 +73,8 @@ export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files"
 
   // Build URLs for download / preview
   const fileUrl = selected ? toAbsUrl(selected.path || undefined) : null;
+  // Heuristic: evidence entries have fileName/content (annexure entries don't)
+  const isEvidence = !!(selected?.fileName || selected?.content);
 
   // For text items (comment/justification), build a data URL for download
   const textDataUrl = selected?.content
@@ -72,10 +92,14 @@ export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files"
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
             {/* File list */}
             <div className="md:col-span-4 border rounded-lg overflow-hidden">
-              <div className="bg-gray-50 px-3 py-2 text-sm font-medium">Files</div>
+              <div className="bg-gray-50 px-3 py-2 text-sm font-medium">
+                Files
+              </div>
               <ul className="max-h-[55vh] overflow-auto divide-y">
                 {normalized.length === 0 && (
-                  <li className="px-3 py-3 text-sm text-gray-500">No files found.</li>
+                  <li className="px-3 py-3 text-sm text-gray-500">
+                    No files found.
+                  </li>
                 )}
                 {normalized.map((f, i) => {
                   const url = toAbsUrl(f.path || undefined);
@@ -118,7 +142,10 @@ export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files"
                           <a
                             className="text-xs text-blue-600 underline shrink-0"
                             href={textDataUrl || "#"}
-                            download={`${(f.name || "note").replace(/\s+/g, "_")}.txt`}
+                            download={`${(f.name || "note").replace(
+                              /\s+/g,
+                              "_"
+                            )}.txt`}
                             onClick={(e) => e.stopPropagation()}
                           >
                             Download
@@ -133,15 +160,25 @@ export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files"
 
             {/* Preview panel */}
             <div className="md:col-span-8 border rounded-lg overflow-hidden">
-              <div className="bg-gray-50 px-3 py-2 text-sm font-medium">Preview</div>
+              <div className="bg-gray-50 px-3 py-2 text-sm font-medium">
+                Preview
+              </div>
               <div className="bg-white max-h-[55vh] overflow-auto p-3">
                 {!selected ? (
-                  <div className="text-sm text-gray-500">Select a file to preview.</div>
+                  <div className="text-sm text-gray-500">
+                    Select a file to preview.
+                  </div>
                 ) : selected.content ? (
-                  <pre className="whitespace-pre-wrap text-sm">{selected.content}</pre>
+                  <pre className="whitespace-pre-wrap text-sm">
+                    {selected.content}
+                  </pre>
                 ) : fileUrl ? (
                   isImage(selected.type || null, selected.name || null) ? (
-                    <img src={fileUrl} alt={selected.name} className="max-w-full h-auto" />
+                    <img
+                      src={fileUrl}
+                      alt={selected.name}
+                      className="max-w-full h-auto"
+                    />
                   ) : isPdf(selected.type || null, selected.name || null) ? (
                     <iframe
                       src={fileUrl}
@@ -171,6 +208,21 @@ export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files"
               </div>
 
               <div className="flex items-center justify-end gap-2 p-3 border-t bg-white">
+                {canDeleteEvidence &&
+                  isEvidence &&
+                  onDeleteEvidence &&
+                  selected?.id && (
+                    <Button
+                      variant="destructive"
+                      onClick={async () => {
+                        const ok = window.confirm("Remove this evidence item?");
+                        if (!ok) return;
+                        await onDeleteEvidence(selected);
+                      }}
+                    >
+                      Remove Evidence
+                    </Button>
+                  )}
                 {fileUrl && (
                   <a
                     href={fileUrl}
@@ -185,13 +237,19 @@ export const DocumentViewer: React.FC<Props> = ({ open, onClose, title = "Files"
                 {!fileUrl && textDataUrl && (
                   <a
                     href={textDataUrl}
-                    download={`${(selected.name || "note").replace(/\s+/g, "_")}.txt`}
+                    download={`${(selected.name || "note").replace(
+                      /\s+/g,
+                      "_"
+                    )}.txt`}
                     className="text-sm"
                   >
                     <Button variant="outline">Download</Button>
                   </a>
                 )}
-                <Button onClick={onClose} className="bg-gradient-to-r from-blue-500 to-green-500">
+                <Button
+                  onClick={onClose}
+                  className="bg-gradient-to-r from-blue-500 to-green-500"
+                >
                   Close
                 </Button>
               </div>

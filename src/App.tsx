@@ -9,6 +9,7 @@ import { Navbar } from "@/components/Navbar";
 import { AuditorDashboard } from "@/pages/AuditorDashboard";
 import { UserDashboard } from "@/pages/UserDashboard";
 import { ApproverDashboard } from "@/pages/ApproverDashboard";
+import { MyDashboard } from "@/pages/MyDashboard";
 
 const queryClient = new QueryClient();
 
@@ -19,24 +20,44 @@ const AppContent = () => {
     return <Login />;
   }
 
+  // AppContent()
   const getDashboardComponent = () => {
     switch (user?.role) {
-      case 'auditor':
+      case "auditor":
         return <AuditorDashboard />;
-      case 'user':
-        return <UserDashboard />;
-      case 'approver':
-        return <ApproverDashboard />;
+
+      // ⬇️ Both roles land on the unified capability-stacking page
+      case "user":
+      case "approver":
       default:
-        return <Navigate to="/" replace />;
+        return <MyDashboard />;
     }
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
       <Navbar />
+      <main className="flex-1">{getDashboardComponent()}</main>
+    </div>
+  );
+};
+
+/**
+ * Route wrapper for the unified, capability-stacking dashboard at /my.
+ * Mirrors AppContent's auth + layout so behavior is consistent.
+ */
+const MyRoute = () => {
+  const { isAuthenticated } = useAuth();
+
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Navbar />
       <main className="flex-1">
-        {getDashboardComponent()}
+        <MyDashboard />
       </main>
     </div>
   );
@@ -50,6 +71,9 @@ const App = () => (
       <AuthProvider>
         <BrowserRouter>
           <Routes>
+            {/* Unified dashboard path */}
+            <Route path="/my" element={<MyRoute />} />
+            {/* Fallback to role-based AppContent for all other paths */}
             <Route path="*" element={<AppContent />} />
           </Routes>
         </BrowserRouter>

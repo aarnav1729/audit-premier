@@ -1,7 +1,6 @@
-
-import React from 'react';
-import { Navigate } from 'react-router-dom';
-import { useAuth } from '@/hooks/useAuth';
+import React from "react";
+import { Navigate } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
 
 const Index = () => {
   const { isAuthenticated, user } = useAuth();
@@ -10,16 +9,17 @@ const Index = () => {
     return <Navigate to="/" replace />;
   }
 
-  // Redirect to appropriate dashboard based on role
+  // Redirect to appropriate landing based on role
   switch (user?.role) {
-    case 'auditor':
+    case "auditor":
       return <Navigate to="/auditor" replace />;
-    case 'user':
-      return <Navigate to="/user" replace />;
-    case 'approver':
-      return <Navigate to="/approver" replace />;
+    case "user":
+    case "approver":
+      // Unified, capability-stacking page for non-auditors
+      return <Navigate to="/my" replace />;
     default:
-      return <Navigate to="/" replace />;
+      // Unknown/non-standard roles also land on the unified page
+      return <Navigate to="/my" replace />;
   }
 };
 

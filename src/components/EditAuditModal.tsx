@@ -1,9 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AuditIssue } from "@/types/audit";
@@ -24,7 +35,12 @@ function toAbsUrl(p?: string | null) {
   return `${window.location.origin}/${cleaned}`;
 }
 
-export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved }) => {
+export const EditAuditModal: React.FC<Props> = ({
+  open,
+  onClose,
+  issue,
+  onSaved,
+}) => {
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -66,7 +82,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
     } catch {
       annexure = [];
     }
-    const ev = Array.isArray(issue?.evidenceReceived) ? issue!.evidenceReceived : [];
+    const ev = Array.isArray(issue?.evidenceReceived)
+      ? issue!.evidenceReceived
+      : [];
 
     const annDocs: DocItem[] = (annexure || []).map((a, i) => ({
       id: `ann-${i}`,
@@ -107,7 +125,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
       approver: String(issue.approver || ""),
       cxoResponsible: String(issue.cxoResponsible || ""),
       coOwner: String(issue.coOwner || ""),
-      timeline: issue.timeline ? new Date(issue.timeline).toISOString().split("T")[0] : "",
+      timeline: issue.timeline
+        ? new Date(issue.timeline).toISOString().split("T")[0]
+        : "",
       currentStatus: issue.currentStatus || "To Be Received",
       reviewComments: issue.reviewComments || "",
       risk: (issue as any).risk || "",
@@ -134,7 +154,10 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
       const res = await fetch(`${API_BASE_URL}/audit-issues/${issue.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          actor: (window as any).__userEmail || "",
+        }),
       });
 
       const updated = await res.json();
@@ -146,10 +169,13 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
       if (files.length > 0) {
         const fd = new FormData();
         files.forEach((f) => fd.append("annexure", f, f.name));
-        const upRes = await fetch(`${API_BASE_URL}/audit-issues/${issue.id}/annexure`, {
-          method: "POST",
-          body: fd,
-        });
+        const upRes = await fetch(
+          `${API_BASE_URL}/audit-issues/${issue.id}/annexure`,
+          {
+            method: "POST",
+            body: fd,
+          }
+        );
         const upJson = await upRes.json();
         if (!upRes.ok) {
           throw new Error(upJson?.error || "Failed to upload attachments");
@@ -180,7 +206,11 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
         <div className="border rounded-lg p-3 mb-4 bg-gray-50">
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium">Existing Attachments</div>
-            <Button variant="outline" size="sm" onClick={() => setViewerOpen(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setViewerOpen(true)}
+            >
               View All ({allFiles.length})
             </Button>
           </div>
@@ -216,7 +246,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
               );
             })}
             {allFiles.length > 6 && (
-              <span className="text-xs text-gray-500">+{allFiles.length - 6} more</span>
+              <span className="text-xs text-gray-500">
+                +{allFiles.length - 6} more
+              </span>
             )}
           </div>
         </div>
@@ -224,29 +256,44 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
           <div>
             <Label>Fiscal Year</Label>
-            <Input value={form.fiscalYear} onChange={(e) => setField("fiscalYear", e.target.value)} />
+            <Input
+              value={form.fiscalYear}
+              onChange={(e) => setField("fiscalYear", e.target.value)}
+            />
           </div>
 
           <div>
             <Label>Date</Label>
-            <Input type="date" value={form.date} onChange={(e) => setField("date", e.target.value)} />
+            <Input
+              type="date"
+              value={form.date}
+              onChange={(e) => setField("date", e.target.value)}
+            />
           </div>
 
           <div>
             <Label>Process</Label>
-            <Input value={form.process} onChange={(e) => setField("process", e.target.value)} />
+            <Input
+              value={form.process}
+              onChange={(e) => setField("process", e.target.value)}
+            />
           </div>
 
           <div>
             <Label>Entity</Label>
-            <Input value={form.entityCovered} onChange={(e) => setField("entityCovered", e.target.value)} />
+            <Input
+              value={form.entityCovered}
+              onChange={(e) => setField("entityCovered", e.target.value)}
+            />
           </div>
 
           <div className="md:col-span-2">
             <div className="flex items-center justify-between">
               <Label>Observation</Label>
               {observationLocked && (
-                <Badge className="bg-gray-600">Locked (evidence accepted)</Badge>
+                <Badge className="bg-gray-600">
+                  Locked (evidence accepted)
+                </Badge>
               )}
             </div>
             <Textarea
@@ -255,7 +302,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
               rows={4}
               disabled={observationLocked}
               placeholder={
-                observationLocked ? "Cannot edit after evidence is accepted" : ""
+                observationLocked
+                  ? "Cannot edit after evidence is accepted"
+                  : ""
               }
             />
           </div>
@@ -266,7 +315,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
               value={form.riskLevel}
               onValueChange={(v) => setField("riskLevel", v)}
             >
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="high">High</SelectItem>
                 <SelectItem value="medium">Medium</SelectItem>
@@ -281,10 +332,14 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
               value={form.currentStatus}
               onValueChange={(v) => setField("currentStatus", v)}
             >
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="To Be Received">To Be Received</SelectItem>
-                <SelectItem value="Partially Received">Partially Received</SelectItem>
+                <SelectItem value="Partially Received">
+                  Partially Received
+                </SelectItem>
                 <SelectItem value="Received">Received</SelectItem>
                 <SelectItem value="Closed">Closed</SelectItem>
               </SelectContent>
@@ -310,7 +365,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
           </div>
 
           <div className="md:col-span-2">
-            <Label>Person Responsible (semicolon or comma separated emails)</Label>
+            <Label>
+              Person Responsible (semicolon or comma separated emails)
+            </Label>
             <Input
               value={form.personResponsible}
               onChange={(e) => setField("personResponsible", e.target.value)}
@@ -337,7 +394,9 @@ export const EditAuditModal: React.FC<Props> = ({ open, onClose, issue, onSaved 
           </div>
 
           <div className="md:col-span-2">
-            <Label>Co-Owner (optional; semicolon or comma separated emails)</Label>
+            <Label>
+              Co-Owner (optional; semicolon or comma separated emails)
+            </Label>
             <Input
               value={form.coOwner}
               onChange={(e) => setField("coOwner", e.target.value)}

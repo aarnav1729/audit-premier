@@ -40,6 +40,8 @@ export const ExcelUpload: React.FC = () => {
     "risk",
     "actionRequired",
     "annexure", // "file1.pdf; file2.docx" (names only)
+    "Further comment by Management", // OPTIONAL
+    "Further comment by auditor", // OPTIONAL
   ];
 
   const downloadTemplate = () => {
@@ -65,6 +67,8 @@ export const ExcelUpload: React.FC = () => {
         "Medium operational risk",
         "Follow-up required",
         "evidence.pdf; policy.docx",
+        "CXO noted a dependency on IT controls", // Further comment by Management
+        "Auditor requested additional log samples", // Further comment by auditor
       ].join("\t") + "\n";
 
     const tsv = header + example;
@@ -328,6 +332,10 @@ export const ExcelUpload: React.FC = () => {
                   <TableCell>Medium operational risk</TableCell>
                   <TableCell>Follow-up required</TableCell>
                   <TableCell>evidence.pdf; policy.docx</TableCell>
+                  <TableCell>CXO noted a dependency on IT controls</TableCell>
+                  <TableCell>
+                    Auditor requested additional log samples
+                  </TableCell>
                 </TableRow>
               </TableBody>
             </Table>

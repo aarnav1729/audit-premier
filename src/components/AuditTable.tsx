@@ -34,6 +34,8 @@ interface AuditTableProps {
   showCreateButton?: boolean;
   title?: string;
   actionColumn?: (issue: AuditIssue) => React.ReactNode;
+  /** Optional email to filter server-side when this component fetches on its own */
+  viewer?: string;
 }
 
 /** Local view model for comments we’ll render in the new column */
@@ -162,7 +164,10 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   showCreateButton = false,
   title = "Audit Issues",
   actionColumn,
+  viewer,
 }) => {
+  // Controlled if parent passes auditIssues (even an empty array)
+  const isControlled = auditIssues !== undefined;
   const [issues, setIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -186,16 +191,42 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFiles, setViewerFiles] = useState<DocItem[]>([]);
   const [viewerTitle, setViewerTitle] = useState<string>("Files");
+  const [viewerCanDelete, setViewerCanDelete] = useState<boolean>(false);
+  const [viewerIssueId, setViewerIssueId] = useState<string | null>(null);
+
+  // per-row approver/CXO comment inputs
+  const commentRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   // Pull any stored comments from the audit storage (used by Approver/Auditor addComment)
   // Default to [] to avoid any runtime issues if not present.
-  const { comments: storedComments = [] } = useAuditStorage() as any;
+  const { comments: storedComments = [], addComment } =
+    useAuditStorage() as any;
 
   // fetch from API
   const fetchIssues = async () => {
+    // If controlled, do nothing (parent owns data); keeps behavior predictable
+    if (isControlled) return;
     try {
-      setLoading(true);
-      const res = await fetch(`${API_BASE_URL}/audit-issues`);
+      setError(null);
+      // Try auditor scope first; server returns 403 if viewer isn't an auditor
+      const baseAll = new URL(`${API_BASE_URL}/audit-issues`);
+      if (viewer) {
+        baseAll.searchParams.set("viewer", viewer.toLowerCase());
+        baseAll.searchParams.set("scope", "all");
+      }
+
+      let res = await fetch(baseAll.toString());
+
+      // Fall back to user scope ('mine') on RBAC or param errors
+      if (res.status === 403 || res.status === 400) {
+        const baseMine = new URL(`${API_BASE_URL}/audit-issues`);
+        if (viewer) {
+          baseMine.searchParams.set("viewer", viewer.toLowerCase());
+          baseMine.searchParams.set("scope", "mine");
+        }
+        res = await fetch(baseMine.toString());
+      }
+
       if (!res.ok) throw new Error(`Status ${res.status}`);
       const data: AuditIssue[] = await res.json();
       setIssues(data);
@@ -208,14 +239,16 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   };
 
   useEffect(() => {
-    if (auditIssues && auditIssues.length) {
+    // If the parent passes auditIssues (even an empty array), treat this component
+    // as controlled and DO NOT refetch all issues — this avoids privacy leaks.
+    if (auditIssues !== undefined) {
       setIssues(auditIssues);
       setLoading(false);
       return;
     }
     fetchIssues();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [auditIssues, viewer]);
 
   const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -293,6 +326,16 @@ export const AuditTable: React.FC<AuditTableProps> = ({
     if (splitEmails(issue.personResponsible).includes(e)) return "PR";
     return undefined;
   };
+
+  // Is current viewer PR for this issue?
+  const isViewerPR = (issue: AuditIssue) =>
+    !!viewer &&
+    splitEmails(issue.personResponsible).includes(viewer.toLowerCase());
+  // Is current viewer Approver or CXO for this issue?
+  const isViewerApproverOrCXO = (issue: AuditIssue) =>
+    !!viewer &&
+    (splitEmails(issue.approver).includes(viewer.toLowerCase()) ||
+      splitEmails(issue.cxoResponsible).includes(viewer.toLowerCase()));
 
   /** Build a unified conversation list for an issue */
   const getConversation = (issue: AuditIssue): ViewComment[] => {
@@ -511,7 +554,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
         const msg = j?.error || "Failed to close issue";
         throw new Error(msg);
       }
-      await fetchIssues(); // refresh data
+      await fetchIssues(); // refresh data when this component owns fetching
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Failed to close audit issue.");
@@ -610,6 +653,84 @@ export const AuditTable: React.FC<AuditTableProps> = ({
     return [...annDocs, ...evDocs];
   };
 
+  // Delete evidence by id for the issue currently shown in viewer
+  const deleteEvidence = async (doc: DocItem) => {
+    if (!viewerIssueId || !doc?.id) return;
+    if (!viewer) return; // must know who is acting
+    const res = await fetch(
+      `${API_BASE_URL}/audit-issues/${viewerIssueId}/evidence/${encodeURIComponent(
+        String(doc.id)
+      )}`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actor: viewer }),
+      }
+    );
+    const j = await res.json().catch(() => ({} as any));
+    if (!res.ok) {
+      const msg = j?.error || `Failed to remove evidence (HTTP ${res.status})`;
+      throw new Error(msg);
+    }
+    // Update the in-modal list
+    const issue = issues.find((i) => i.id === viewerIssueId);
+    if (issue) {
+      const nextFiles = getAllFilesForIssue(issue).filter(
+        (f) => String(f.id) !== String(doc.id)
+      );
+      setViewerFiles(nextFiles);
+    }
+    // If this component owns fetching, refresh the table
+    if (auditIssues === undefined) await fetchIssues();
+  };
+
+  // Upload evidence (files + optional text/justification) for PR
+  const uploadEvidencePost = async (
+    issueId: string,
+    files: File[],
+    textEvidence: string,
+    justification: string
+  ) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("evidence", f));
+    if (viewer) fd.append("uploadedBy", viewer);
+    if (textEvidence) fd.append("textEvidence", textEvidence);
+    if (justification) fd.append("justification", justification);
+    const res = await fetch(
+      `${API_BASE_URL}/audit-issues/${issueId}/evidence`,
+      {
+        method: "POST",
+        body: fd,
+      }
+    );
+    const j = await res.json().catch(() => ({} as any));
+    if (!res.ok)
+      throw new Error(j?.error || `Upload failed (HTTP ${res.status})`);
+    // refresh if this component owns data fetching
+    if (!isControlled) await fetchIssues();
+    alert(j?.message || "Evidence uploaded.");
+  };
+
+  // Open file picker and collect optional text/justification
+  const handleUploadClick = (issue: AuditIssue) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.onchange = async () => {
+      try {
+        const files = Array.from(input.files || []);
+        const textEvidence =
+          window.prompt("Optional comment to include with upload:") || "";
+        const justification =
+          window.prompt("Optional justification (due date, etc.):") || "";
+        await uploadEvidencePost(issue.id, files, textEvidence, justification);
+      } catch (e: any) {
+        alert(e?.message || "Failed to upload evidence.");
+      }
+    };
+    input.click();
+  };
+
   if (loading)
     return <div className="p-6 text-center">Loading audit issues…</div>;
   if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
@@ -620,7 +741,16 @@ export const AuditTable: React.FC<AuditTableProps> = ({
         <div className="flex justify-between items-center gap-2 flex-wrap">
           <CardTitle className="text-xl font-semibold">{title}</CardTitle>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={fetchIssues} title="Refresh">
+            <Button
+              variant="outline"
+              onClick={isControlled ? undefined : fetchIssues}
+              disabled={isControlled}
+              title={
+                isControlled
+                  ? "Refresh is handled by the parent (controlled table)"
+                  : "Refresh"
+              }
+            >
               <RefreshCw className="h-4 w-4 mr-2" />
               Refresh
             </Button>
@@ -729,92 +859,54 @@ export const AuditTable: React.FC<AuditTableProps> = ({
       </CardHeader>
 
       <CardContent>
-        {/* Scroll container for both axes to enable sticky header "freezepane" */}
+        {/* The scroll container remains the same */}
         <div className="relative max-h-[70vh] overflow-auto">
-          <Table className="w-full">
-            {/* Use sticky on each header cell (th) for cross-browser reliability */}
-            <TableHeader className="bg-white z-20">
-              <TableRow>
-                <TableHead
-                  onClick={() => handleSort("serialNumber")}
-                  className="sticky top-0 z-30 bg-white cursor-pointer"
-                >
-                  <div className="flex items-center">
-                    S.No <ArrowUpDown className="ml-1 h-3 w-3" />
-                  </div>
-                </TableHead>
-                <TableHead
-                  onClick={() => handleSort("fiscalYear")}
-                  className="sticky top-0 z-30 bg-white cursor-pointer"
-                >
-                  <div className="flex items-center">
-                    Fiscal Year <ArrowUpDown className="ml-1 h-3 w-3" />
-                  </div>
-                </TableHead>
-                <TableHead
-                  onClick={() => handleSort("date")}
-                  className="sticky top-0 z-30 bg-white cursor-pointer"
-                >
-                  <div className="flex items-center">
-                    Quarter <ArrowUpDown className="ml-1 h-3 w-3" />
-                  </div>
-                </TableHead>
+  <Table className="w-full border-separate border-spacing-0">
+    <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
+      <TableRow>
+        <TableHead className="cursor-pointer" onClick={() => handleSort("serialNumber")}>
+          <div className="flex items-center">S.No <ArrowUpDown className="ml-1 h-3 w-3" /></div>
+        </TableHead>
+        <TableHead className="cursor-pointer" onClick={() => handleSort("fiscalYear")}>
+          <div className="flex items-center">Fiscal Year <ArrowUpDown className="ml-1 h-3 w-3" /></div>
+        </TableHead>
+        <TableHead className="cursor-pointer" onClick={() => handleSort("date")}>
+          <div className="flex items-center">Quarter <ArrowUpDown className="ml-1 h-3 w-3" /></div>
+        </TableHead>
                 <TableHead
                   onClick={() => handleSort("process")}
-                  className="sticky top-0 z-30 bg-white cursor-pointer"
+                  className="cursor-pointer"
                 >
                   <div className="flex items-center">
                     Process <ArrowUpDown className="ml-1 h-3 w-3" />
                   </div>
                 </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Entity
-                </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Observation
-                </TableHead>
+                <TableHead>Entity</TableHead>
+                <TableHead>Observation</TableHead>
                 <TableHead
                   onClick={() => handleSort("riskLevel")}
-                  className="sticky top-0 z-30 bg-white cursor-pointer"
+                  className="cursor-pointer"
                 >
                   <div className="flex items-center">
                     Risk Level <ArrowUpDown className="ml-1 h-3 w-3" />
                   </div>
                 </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Recommendation
-                </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Management Comment
-                </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Person Responsible
-                </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  CXO Responsible
-                </TableHead>
-
-                {/* NEW: Attachments column */}
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Attachments
-                </TableHead>
-
-                {/* NEW: Comments column */}
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Comments
-                </TableHead>
-
+                <TableHead>Recommendation</TableHead>
+                <TableHead>Management Comment</TableHead>
+                <TableHead>Person Responsible</TableHead>
+                <TableHead>Approver</TableHead>
+                <TableHead>CXO Responsible</TableHead>
+                <TableHead>Attachments</TableHead>
+                <TableHead>Comments</TableHead>
                 <TableHead
                   onClick={() => handleSort("currentStatus")}
-                  className="sticky top-0 z-30 bg-white cursor-pointer"
+                  className="cursor-pointer"
                 >
                   <div className="flex items-center">
                     Status <ArrowUpDown className="ml-1 h-3 w-3" />
                   </div>
                 </TableHead>
-                <TableHead className="sticky top-0 z-30 bg-white">
-                  Actions
-                </TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
 
@@ -928,6 +1020,11 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                       {renderEmails(issue.personResponsible)}
                     </TableCell>
 
+                    {/* Approver — stack emails */}
+                    <TableCell className="align-top">
+                      {renderEmails(issue.approver)}
+                    </TableCell>
+
                     {/* CXO Responsible — stack emails (and optional Co-Owner) */}
                     <TableCell className="align-top">
                       {renderEmails(issue.cxoResponsible)}
@@ -963,6 +1060,31 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                             </a>
                           );
                         })}
+                        {/* show top 3 file-based evidence items inline; text evidence goes to Comments */}
+                        {(issue.evidenceReceived || [])
+                          .filter(
+                            (e: any) => e?.path && e?.fileType !== "text/plain"
+                          )
+                          .slice(0, 3)
+                          .map((e: any, idx: number) => {
+                            const url = toAbsUrl(e.path);
+                            return (
+                              <a
+                                key={`ev-${idx}-${e.fileName}`}
+                                href={url || "#"}
+                                target="_blank"
+                                rel="noreferrer"
+                                download
+                                className="text-xs text-blue-600 underline inline-flex items-center gap-1"
+                                title={e.fileName || "Evidence"}
+                              >
+                                <Paperclip className="h-3 w-3" />
+                                <span className="truncate max-w-[160px]">
+                                  {e.fileName || "Evidence"}
+                                </span>
+                              </a>
+                            );
+                          })}
                         {annexureLinks.length === 0 && (
                           <span className="text-xs text-gray-500">—</span>
                         )}
@@ -979,7 +1101,23 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                                 entity || issue.entityCovered
                               }`
                             );
-                            setViewerFiles(getAllFilesForIssue(issue));
+                            const files = getAllFilesForIssue(issue);
+                            setViewerFiles(files);
+                            setViewerIssueId(issue.id);
+                            const isLocked =
+                              (issue as any).isLocked === 1 ||
+                              (issue as any).isLocked === true ||
+                              issue.evidenceStatus === "Accepted";
+                            const canDel =
+                              !!viewer &&
+                              !isLocked &&
+                              String(issue.personResponsible || "")
+                                .toLowerCase()
+                                .split(/[;,]\s*/)
+                                .map((s) => s.trim())
+                                .filter(Boolean)
+                                .includes(viewer.toLowerCase());
+                            setViewerCanDelete(canDel);
                             setViewerOpen(true);
                           }}
                           title="View all files (annexure + evidence)"
@@ -990,7 +1128,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                       </div>
                     </TableCell>
 
-                    {/* NEW: Comments feed */}
+                    {/* NEW: Comments feed + composer (Approver/CXO) */}
                     <TableCell className="align-top max-w-xs">
                       {conversation.length === 0 ? (
                         <span className="text-xs text-gray-500">—</span>
@@ -1011,7 +1149,6 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                                     {c.role}
                                   </span>
                                 )}
-
                                 <span className="text-gray-500 shrink-0">
                                   {new Date(c.when).toLocaleString()}
                                 </span>
@@ -1021,6 +1158,43 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                               </div>
                             </div>
                           ))}
+                        </div>
+                      )}
+
+                      {/* Inline composer when viewer is Approver or CXO.
+                          If viewer is both PR and Approver/CXO, they get both upload (left column) and this composer. */}
+                      {viewer && isViewerApproverOrCXO(issue) && (
+                        <div className="mt-2 border rounded p-2 bg-white">
+                          <textarea
+                            ref={(el) => (commentRefs.current[issue.id] = el)}
+                            className="w-full text-xs border rounded p-1"
+                            rows={2}
+                            placeholder="Add a comment (visible in this thread)…"
+                          />
+                          <div className="flex justify-end mt-1">
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                const el = commentRefs.current[issue.id];
+                                const val = (el?.value || "").trim();
+                                if (!val) return;
+                                // store locally; hook is expected to trigger re-render
+                                addComment?.({
+                                  id: `${issue.id}-${Date.now()}`,
+                                  auditIssueId: issue.id,
+                                  userId: viewer,
+                                  userName: viewer,
+                                  content: val,
+                                  type: "comment",
+                                  createdAt: new Date().toISOString(),
+                                });
+                                if (el) el.value = "";
+                              }}
+                              title="Post comment as Approver/CXO"
+                            >
+                              Comment
+                            </Button>
+                          </div>
                         </div>
                       )}
                     </TableCell>
@@ -1087,8 +1261,16 @@ export const AuditTable: React.FC<AuditTableProps> = ({
         <DocumentViewer
           open={viewerOpen}
           onClose={() => setViewerOpen(false)}
-          title={viewerTitle}
           files={viewerFiles}
+          title={viewerTitle}
+          canDeleteEvidence={viewerCanDelete}
+          onDeleteEvidence={async (doc) => {
+            try {
+              await deleteEvidence(doc);
+            } catch (e: any) {
+              alert(e?.message || "Failed to remove evidence.");
+            }
+          }}
         />
       </CardContent>
 

@@ -1,5 +1,4 @@
 // root/src/pages/AuditorDashboard.tsx
-
 import React, { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -43,6 +42,9 @@ const API_BASE_URL = `${window.location.origin}/api`;
 export const AuditorDashboard: React.FC = () => {
   const { auditIssues, updateAuditIssue, addComment } = useAuditStorage();
   const { user } = useAuth();
+
+  const isAuditor = (user?.role || "").toLowerCase() === "auditor";
+  const viewerEmail = (user?.email || "").toLowerCase();
 
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [selectedEvidence, setSelectedEvidence] = useState<any[]>([]);
@@ -89,12 +91,12 @@ export const AuditorDashboard: React.FC = () => {
       (issue as any).isLocked === true ||
       issue.evidenceStatus === "Accepted";
     if (locked) {
-     // toast({
-     //   title: "Locked",
-     //   description:
+      // toast({
+      //   title: "Locked",
+      //   description:
       //    "This issue is locked after acceptance. Editing is disabled.",
-     //   variant: "destructive",
-     // });
+      //   variant: "destructive",
+      // });
       return;
     }
     setIssueToEdit(issue);
@@ -144,10 +146,10 @@ export const AuditorDashboard: React.FC = () => {
         type: "review",
       });
 
-     // toast({
-     //   title: "Review Submitted",
-     //   description: `Evidence has been marked as ${updated.evidenceStatus.toLowerCase()}.`,
-     // });
+      // toast({
+      //   title: "Review Submitted",
+      //   description: `Evidence has been marked as ${updated.evidenceStatus.toLowerCase()}.`,
+      // });
 
       // Reset modal state
       setReviewModalOpen(false);
@@ -156,10 +158,10 @@ export const AuditorDashboard: React.FC = () => {
     } catch (err: any) {
       console.error("Review submission error:", err);
       //toast({
-       // title: "Error Submitting Review",
-       // description: err.message || "Please try again.",
-       // variant: "destructive",
-     // });
+      // title: "Error Submitting Review",
+      // description: err.message || "Please try again.",
+      // variant: "destructive",
+      // });
     } finally {
       setIsSubmittingReview(false);
     }
@@ -232,7 +234,9 @@ export const AuditorDashboard: React.FC = () => {
                 ? "bg-green-500"
                 : issue.evidenceStatus === "Partially Accepted"
                 ? "bg-yellow-500"
-                : "bg-red-500"
+                : issue.evidenceStatus === "Submitted"
+                ? "bg-blue-500"
+                : "bg-red-500" // Insufficient or anything else
             }
           >
             {issue.evidenceStatus}
@@ -267,18 +271,26 @@ export const AuditorDashboard: React.FC = () => {
           <Analytics title="Audit Analytics Dashboard" />
         </TabsContent>
 
-        <TabsContent value="audit-issues" className="space-y-4">
+        <TabsContent
+          value="audit-issues"
+          className="space-y-4 overflow-visible"
+        >
           <AuditTable
-            auditIssues={auditIssues}
-            showCreateButton={true}
-            title="All Audit Issues"
-            actionColumn={getActionColumn}
+            // Let the table fetch from the server so evidence shows up immediately
+            auditIssues={undefined}
+            // viewer is used by the table to request ?scope=all for auditors (server authorizes by AUDITOR_EMAILS)
+            viewer={viewerEmail}
+            showCreateButton={isAuditor}
+            title={isAuditor ? "All Audit Issues" : "My Audit Issues"}
+            actionColumn={isAuditor ? getActionColumn : undefined}
           />
         </TabsContent>
 
-        <TabsContent value="excel-upload" className="space-y-4">
-          <ExcelUpload />
-        </TabsContent>
+        {isAuditor && (
+          <TabsContent value="excel-upload" className="space-y-4">
+            <ExcelUpload />
+          </TabsContent>
+        )}
       </Tabs>
 
       {/* Evidence Viewer Modal */}
@@ -361,9 +373,9 @@ export const AuditorDashboard: React.FC = () => {
           // Merge into local storage/context
           updateAuditIssue(updated.id, updated as any);
           //toast({
-           // title: "Issue Updated",
-            //description: `Issue #${updated.serialNumber} has been saved.`,
-         // });
+          // title: "Issue Updated",
+          //description: `Issue #${updated.serialNumber} has been saved.`,
+          // });
         }}
       />
     </div>

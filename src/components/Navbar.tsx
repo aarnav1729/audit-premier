@@ -1,8 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
-import { Shield, LogOut, User } from "lucide-react";
+import { LogOut, User, Bell } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+import Notification from "@/components/Notification";
 import logo from "./logo.png";
 
 const API_BASE_URL = `${window.location.origin}/api`;
@@ -100,6 +108,32 @@ export const Navbar: React.FC = () => {
               </Badge>
             ))}
           </div>
+
+          {/* Notifications bell -> right-side drawer with Notification feed */}
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative"
+                aria-label="Open notifications"
+                title="Notifications"
+              >
+                <Bell className="h-5 w-5 text-gray-700" />
+                {/* (Optional) small dot for attention — remove if undesired */}
+                {/* <span className="absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full bg-blue-600" /> */}
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="right" className="w-full sm:max-w-xl p-0">
+              <SheetHeader className="border-b px-4 py-3">
+                <SheetTitle className="text-base">Notifications</SheetTitle>
+              </SheetHeader>
+              <div className="h-[calc(100vh-3.25rem)] overflow-y-auto p-4">
+                <Notification />
+              </div>
+            </SheetContent>
+          </Sheet>
+
           <Button
             variant="outline"
             size="sm"

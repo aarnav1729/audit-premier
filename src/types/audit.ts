@@ -10,6 +10,7 @@ export interface AuditIssue {
   id: string;
   serialNumber: number;
   fiscalYear: string;
+  quarter?: "Q1" | "Q2" | "Q3" | "Q4" | null;
   date: string;
   process: string;
   entityCovered: string;

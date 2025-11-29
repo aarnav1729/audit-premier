@@ -36,6 +36,7 @@ import { AuditIssue } from "@/types/audit";
 //import { toast } from "@/components/ui/use-toast";
 
 import { EditAuditModal } from "@/components/EditAuditModal";
+import { AuditorsManager } from "@/components/AuditorsManager";
 
 const API_BASE_URL = `${window.location.origin}/api`;
 
@@ -43,8 +44,11 @@ export const AuditorDashboard: React.FC = () => {
   const { auditIssues, updateAuditIssue, addComment } = useAuditStorage();
   const { user } = useAuth();
 
+  const [reloadKey, setReloadKey] = useState(0);
+
   const isAuditor = (user?.role || "").toLowerCase() === "auditor";
   const viewerEmail = (user?.email || "").toLowerCase();
+  const canBypassLock = viewerEmail === "santosh.kumar@protivitiglobal.in";
 
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [selectedEvidence, setSelectedEvidence] = useState<any[]>([]);
@@ -60,16 +64,65 @@ export const AuditorDashboard: React.FC = () => {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [issueToEdit, setIssueToEdit] = useState<AuditIssue | null>(null);
 
+  const isAccepted = (s?: string) =>
+    String(s || "")
+      .trim()
+      .toLowerCase() === "accepted";
+  const unlockIssue = async (issue: AuditIssue) => {
+    // Don’t call the API if it’s not Accepted right now
+    if (!isAccepted(issue.evidenceStatus)) {
+      console.warn("Unlock skipped: issue is not in Accepted state.");
+      return;
+    }
+
+    const reason = window.prompt(
+      "Please provide a reason for unlocking this issue:"
+    );
+
+    const trimmedReason = (reason || "").trim();
+    if (!trimmedReason) {
+      console.warn("Unlock cancelled: no reason provided.");
+      return;
+    }
+
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/audit-issues/${issue.id}/unlock`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actor: viewerEmail, reason: trimmedReason }),
+        }
+      );
+      const updated: AuditIssue & { error?: string } = await res.json();
+      if (!res.ok) throw new Error(updated.error || "Failed to unlock");
+
+      updateAuditIssue(updated.id, {
+        evidenceStatus: updated.evidenceStatus,
+        currentStatus: updated.currentStatus,
+        reviewComments: updated.reviewComments,
+        ...((updated as any).isLocked !== undefined
+          ? { isLocked: (updated as any).isLocked }
+          : {}),
+      } as any);
+
+      // Ensure the table reflects the new status
+      setReloadKey((k) => k + 1);
+      // toast({ title: "Unlocked", description: "Issue unlocked for editing." });
+    } catch (e: any) {
+      console.error("Unlock error:", e);
+      // toast({ title: "Unlock failed", description: e.message, variant: "destructive" });
+    }
+  };
+
   const viewEvidence = (issue: AuditIssue) => {
     setSelectedEvidence(issue.evidenceReceived);
     setEvidenceModalOpen(true);
   };
 
   const openReviewModal = (issue: AuditIssue) => {
-    const locked =
-      (issue as any).isLocked === 1 ||
-      (issue as any).isLocked === true ||
-      issue.evidenceStatus === "Accepted";
+    const locked = isAccepted(issue.evidenceStatus);
     if (locked) {
       //toast({
       //  title: "Locked",
@@ -86,10 +139,8 @@ export const AuditorDashboard: React.FC = () => {
   };
 
   const openEditModal = (issue: AuditIssue) => {
-    const locked =
-      (issue as any).isLocked === 1 ||
-      (issue as any).isLocked === true ||
-      issue.evidenceStatus === "Accepted";
+    const locked = isAccepted(issue.evidenceStatus);
+    issue.evidenceStatus === "Accepted";
     if (locked) {
       // toast({
       //   title: "Locked",
@@ -168,11 +219,8 @@ export const AuditorDashboard: React.FC = () => {
   };
 
   const getActionColumn = (issue: AuditIssue) => {
-    const locked =
-      (issue as any).isLocked === 1 ||
-      (issue as any).isLocked === true ||
-      issue.evidenceStatus === "Accepted";
-
+    const locked = isAccepted(issue.evidenceStatus);
+    issue.evidenceStatus === "Accepted";
     return (
       <div className="flex flex-wrap gap-2 items-center">
         {issue.evidenceReceived.length > 0 && (
@@ -221,11 +269,22 @@ export const AuditorDashboard: React.FC = () => {
           <span>Edit</span>
         </Button>
 
-        {locked && (
+        {locked && canBypassLock ? (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => unlockIssue(issue)}
+            className="flex items-center space-x-1"
+            title="Unlock this issue for editing"
+          >
+            <Lock className="h-4 w-4" />
+            <span>Unlock</span>
+          </Button>
+        ) : locked ? (
           <Badge className="bg-gray-700 inline-flex items-center gap-1">
             <Lock className="h-3 w-3" /> Locked
           </Badge>
-        )}
+        ) : null}
 
         {issue.evidenceStatus && (
           <Badge
@@ -261,10 +320,13 @@ export const AuditorDashboard: React.FC = () => {
 
       {/* Analytics first, then Audit Issues, then Excel Upload */}
       <Tabs defaultValue="analytics" className="space-y-4">
-        <TabsList className="grid w-fit grid-cols-3">
+        <TabsList
+          className={`grid w-fit ${isAuditor ? "grid-cols-4" : "grid-cols-3"}`}
+        >
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
           <TabsTrigger value="audit-issues">Audit Issues</TabsTrigger>
           <TabsTrigger value="excel-upload">Excel Upload</TabsTrigger>
+          {isAuditor && <TabsTrigger value="auditors">Auditors</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="analytics" className="space-y-4">
@@ -275,7 +337,24 @@ export const AuditorDashboard: React.FC = () => {
           value="audit-issues"
           className="space-y-4 overflow-visible"
         >
+          {/* Export toolbar */}
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              onClick={() => {
+                const scope = isAuditor ? "all" : "mine";
+                const url = `${API_BASE_URL}/audit-issues/export?scope=${scope}&viewer=${encodeURIComponent(
+                  viewerEmail
+                )}`;
+                // Use navigation to trigger a file download
+                window.location.href = url;
+              }}
+            >
+              Export XLSX
+            </Button>
+          </div>
           <AuditTable
+            key={reloadKey}
             // Let the table fetch from the server so evidence shows up immediately
             auditIssues={undefined}
             // viewer is used by the table to request ?scope=all for auditors (server authorizes by AUDITOR_EMAILS)
@@ -289,6 +368,12 @@ export const AuditorDashboard: React.FC = () => {
         {isAuditor && (
           <TabsContent value="excel-upload" className="space-y-4">
             <ExcelUpload />
+          </TabsContent>
+        )}
+
+        {isAuditor && (
+          <TabsContent value="auditors" className="space-y-4">
+            <AuditorsManager viewerEmail={viewerEmail} />
           </TabsContent>
         )}
       </Tabs>
@@ -369,13 +454,9 @@ export const AuditorDashboard: React.FC = () => {
         open={editModalOpen}
         onClose={() => setEditModalOpen(false)}
         issue={issueToEdit}
+        actorEmail={viewerEmail}
         onSaved={(updated) => {
-          // Merge into local storage/context
           updateAuditIssue(updated.id, updated as any);
-          //toast({
-          // title: "Issue Updated",
-          //description: `Issue #${updated.serialNumber} has been saved.`,
-          // });
         }}
       />
     </div>

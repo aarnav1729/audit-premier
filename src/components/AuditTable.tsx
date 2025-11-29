@@ -861,18 +861,33 @@ export const AuditTable: React.FC<AuditTableProps> = ({
       <CardContent>
         {/* The scroll container remains the same */}
         <div className="relative max-h-[70vh] overflow-auto">
-  <Table className="w-full border-separate border-spacing-0">
-    <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
-      <TableRow>
-        <TableHead className="cursor-pointer" onClick={() => handleSort("serialNumber")}>
-          <div className="flex items-center">S.No <ArrowUpDown className="ml-1 h-3 w-3" /></div>
-        </TableHead>
-        <TableHead className="cursor-pointer" onClick={() => handleSort("fiscalYear")}>
-          <div className="flex items-center">Fiscal Year <ArrowUpDown className="ml-1 h-3 w-3" /></div>
-        </TableHead>
-        <TableHead className="cursor-pointer" onClick={() => handleSort("date")}>
-          <div className="flex items-center">Quarter <ArrowUpDown className="ml-1 h-3 w-3" /></div>
-        </TableHead>
+          <Table className="w-full border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-20 bg-white shadow-sm">
+              <TableRow>
+                <TableHead
+                  className="cursor-pointer"
+                  onClick={() => handleSort("serialNumber")}
+                >
+                  <div className="flex items-center">
+                    S.No <ArrowUpDown className="ml-1 h-3 w-3" />
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer"
+                  onClick={() => handleSort("fiscalYear")}
+                >
+                  <div className="flex items-center">
+                    Fiscal Year <ArrowUpDown className="ml-1 h-3 w-3" />
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer"
+                  onClick={() => handleSort("quarter")}
+                >
+                  <div className="flex items-center">
+                    Quarter <ArrowUpDown className="ml-1 h-3 w-3" />
+                  </div>
+                </TableHead>
                 <TableHead
                   onClick={() => handleSort("process")}
                   className="cursor-pointer"
@@ -891,6 +906,15 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                     Risk Level <ArrowUpDown className="ml-1 h-3 w-3" />
                   </div>
                 </TableHead>
+                <TableHead
+                  onClick={() => handleSort("actionRequired")}
+                  className="cursor-pointer"
+                >
+                  <div className="flex items-center">
+                    Action Required <ArrowUpDown className="ml-1 h-3 w-3" />
+                  </div>
+                </TableHead>
+
                 <TableHead>Recommendation</TableHead>
                 <TableHead>Management Comment</TableHead>
                 <TableHead>Person Responsible</TableHead>
@@ -953,8 +977,12 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                     <TableCell>
                       {highlightText(issue.fiscalYear, searchTerm)}
                     </TableCell>
+
                     <TableCell>
-                      {highlightText(getQuarterLabel(issue.date), searchTerm)}
+                      {highlightText(
+                        issue.quarter || getQuarterLabel(issue.date),
+                        searchTerm
+                      )}
                     </TableCell>
                     <TableCell>
                       {highlightText(issue.process, searchTerm)}
@@ -991,6 +1019,17 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                       >
                         {issue.riskLevel.toUpperCase()}
                       </Badge>
+                    </TableCell>
+
+                    {/* Action Required with collapsible 2-line clamp */}
+                    <TableCell className="max-w-xs align-top">
+                      <CollapsibleText
+                        text={issue.actionRequired || ""}
+                        title={issue.actionRequired || ""}
+                        maxLines={2}
+                        className=""
+                        render={(t) => highlightText(t, searchTerm)}
+                      />
                     </TableCell>
 
                     {/* Recommendation with collapsible 2-line clamp */}

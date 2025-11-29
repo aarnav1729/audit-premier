@@ -22,6 +22,7 @@ export const ExcelUpload: React.FC = () => {
   // Keep lowercase headers (server is case-insensitive)
   const requiredColumns = [
     "fiscalYear",
+    "quarter", // optional
     "process",
     "entityCovered",
     "observation",
@@ -50,6 +51,7 @@ export const ExcelUpload: React.FC = () => {
       [
         "2024-25",
         "ITGC",
+        "Q2",
         "PEL",
         "Observation content",
         "High",
@@ -314,6 +316,7 @@ export const ExcelUpload: React.FC = () => {
               <TableBody>
                 <TableRow>
                   <TableCell>2024-25</TableCell>
+                  <TableCell>Q2</TableCell>
                   <TableCell>ITGC</TableCell>
                   <TableCell>PEL</TableCell>
                   <TableCell>Observation content</TableCell>

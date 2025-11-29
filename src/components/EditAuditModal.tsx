@@ -27,6 +27,7 @@ type Props = {
   onClose: () => void;
   issue: AuditIssue | null;
   onSaved?: (updated: AuditIssue) => void; // callback to refresh parent state
+  actorEmail?: string;
 };
 
 function toAbsUrl(p?: string | null) {
@@ -35,11 +36,13 @@ function toAbsUrl(p?: string | null) {
   return `${window.location.origin}/${cleaned}`;
 }
 
+// CMD-F ANCHOR: EditAuditModal actorEmail wiring
 export const EditAuditModal: React.FC<Props> = ({
   open,
   onClose,
   issue,
   onSaved,
+  actorEmail, // <-- ensure this is destructured
 }) => {
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
@@ -146,9 +149,17 @@ export const EditAuditModal: React.FC<Props> = ({
     setFiles(Array.from(e.currentTarget.files));
   };
 
+  // CMD-F ANCHOR: EditAuditModal submit with actorEmail
   const submit = async () => {
     if (!issue) return;
     setSaving(true);
+
+    // Prefer actorEmail from props; fall back to window.__userEmail
+    const actor =
+      actorEmail && actorEmail.trim()
+        ? actorEmail.trim()
+        : ((window as any).__userEmail || "").toString().trim();
+
     try {
       // 1) Update base fields (JSON)
       const res = await fetch(`${API_BASE_URL}/audit-issues/${issue.id}`, {
@@ -156,7 +167,7 @@ export const EditAuditModal: React.FC<Props> = ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...form,
-          actor: (window as any).__userEmail || "",
+          actor, // <-- critical: let backend know who is editing
         }),
       });
 

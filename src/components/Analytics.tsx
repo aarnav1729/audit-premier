@@ -1332,14 +1332,20 @@ function Analytics({
       )}
 
       {/* Reports: Dynamic Table (always shows rows; includes fallback) */}
-      <ReportsTableSection issues={auditIssues} />
+      <ReportsTableSection issues={auditIssues} viewerEmail={viewerEmail} />
     </div>
   );
 }
 
 /* ------------------------- Reports Table Section -------------------------- */
 
-function ReportsTableSection({ issues }: { issues: AuditIssue[] }) {
+function ReportsTableSection({
+  issues,
+  viewerEmail,
+}: {
+  issues: AuditIssue[];
+  viewerEmail?: string;
+}) {
   type ReportMode = "upcoming" | "recent" | "overdue";
   const [reportMode, setReportMode] = React.useState<ReportMode>("upcoming");
   const [periodDays, setPeriodDays] = React.useState<"30" | "60" | "90">("90");
@@ -1471,8 +1477,8 @@ function ReportsTableSection({ issues }: { issues: AuditIssue[] }) {
   };
 
   const onExportXlsx = async () => {
-    const XLSX = await import("xlsx"); // dynamic, keeps bundle lean/failsafe
-    // Shape rows for export
+    // (unchanged) client-side quick export of the visible columns
+    const XLSX = await import("xlsx");
     const exportRows = rows.map((i, idx) => {
       const due = getDueDate(i);
       const accepted = getAcceptedAt(i) || parseDateSmart((i as any).updatedAt);
@@ -1488,11 +1494,40 @@ function ReportsTableSection({ issues }: { issues: AuditIssue[] }) {
           : "",
       };
     });
-
     const ws = XLSX.utils.json_to_sheet(exportRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Report");
     XLSX.writeFile(wb, `analytics_${reportMode}_${periodDays}d.xlsx`);
+  };
+
+  // NEW: server-side detailed export (uses viewer auth + same filters)
+  const onExportServer = async () => {
+    if (!viewerEmail) {
+      alert("Sign in to export the detailed report.");
+      return;
+    }
+    const params = new URLSearchParams({
+      viewer: viewerEmail,
+      scope: "all", // server will down-scope if needed
+      mode: reportMode, // upcoming|recent|overdue
+      days: String(periodDays), // 30|60|90
+    });
+    const url = `${API_BASE_URL}/audit-issues/export-filtered?${params.toString()}`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      const msg = await res.text().catch(() => "");
+      alert(`Export failed (${res.status}). ${msg || ""}`);
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `analytics_${reportMode}_${periodDays}d_detailed.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
   };
 
   return (
@@ -1561,14 +1596,27 @@ function ReportsTableSection({ issues }: { issues: AuditIssue[] }) {
           </div>
         )}
 
-        <div className="flex justify-end mb-3">
+        <div className="flex justify-end gap-2 mb-3">
           <Button
             variant="outline"
             onClick={onExportXlsx}
             className="flex items-center gap-2"
           >
             <Download className="h-4 w-4" />
-            Export XLSX
+            Export XLSX (this table)
+          </Button>
+          <Button
+            onClick={onExportServer}
+            className="flex items-center gap-2"
+            disabled={!viewerEmail}
+            title={
+              !viewerEmail
+                ? "Sign in required"
+                : "Download detailed XLSX from server"
+            }
+          >
+            <Download className="h-4 w-4" />
+            Export Detailed XLSX
           </Button>
         </div>
 

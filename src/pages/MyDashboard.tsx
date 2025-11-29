@@ -24,26 +24,41 @@ function splitEmails(s?: string) {
     .map((x) => x.trim())
     .filter(Boolean);
 }
+// helper at top
+const normalizeEmailLocal = (raw?: string) => {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!s) return "";
+  return s.includes("@") ? s : `${s}@premierenergies.com`;
+};
+
+function splitEmailsNorm(s?: string) {
+  return String(s || "")
+    .split(/[;,]\s*/)
+    .map((x) => normalizeEmailLocal(x))
+    .filter(Boolean);
+}
 
 /** Return per-issue capability flags for the given user email. */
 function getCaps(issue: AuditIssue, userEmail?: string) {
-  const e = String(userEmail || "").toLowerCase();
-  const caps = {
-    canComment: false, // CXO and/or Approver
-    canUploadEvidence: false, // Person Responsible
-  };
+  const e = normalizeEmailLocal(userEmail);
+  const caps = { canComment: false, canUploadEvidence: false };
   if (!e) return caps;
-  const inApprover = splitEmails(issue.approver).includes(e);
-  const inCXO = splitEmails(issue.cxoResponsible).includes(e);
-  const inPR = splitEmails(issue.personResponsible).includes(e);
-  caps.canComment = inCXO || inApprover; // tighten to CXO-only if needed
-  caps.canUploadEvidence = inPR;
+
+  const inApprover = splitEmailsNorm(issue.approver).includes(e);
+  const inCXO = splitEmailsNorm(issue.cxoResponsible).includes(e);
+  const inPR = splitEmailsNorm(issue.personResponsible).includes(e);
+
+  // 👇 Now PR also allowed to comment
+  caps.canComment = inCXO || inApprover || inPR;
+  caps.canUploadEvidence = inPR; // still only PR can upload
   return caps;
 }
 
 export const MyDashboard: React.FC = () => {
   const { user } = useAuth();
-  const me = user?.email || "";
+  const me = normalizeEmailLocal(user?.email || "");
   const [issues, setIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +130,7 @@ export const MyDashboard: React.FC = () => {
     setEvidenceModalOpen(true);
   };
 
+  // CMD-F ANCHOR: const actionColumn = (issue: AuditIssue) => {
   const actionColumn = (issue: AuditIssue) => {
     const caps = getCaps(issue, me);
     const locked =
@@ -126,34 +142,49 @@ export const MyDashboard: React.FC = () => {
     const e = me.toLowerCase();
     const inApprover = splitEmails(issue.approver).includes(e);
     const inCXO = splitEmails(issue.cxoResponsible).includes(e);
-    const commentAs: "CXO" | "Approver" | undefined = inCXO
+    const inPR = splitEmails(issue.personResponsible).includes(e);
+
+    // CXO > Approver > Person Responsible
+    type CommentRole = "CXO" | "Approver" | "Person Responsible";
+
+    const commentAs: CommentRole | undefined = inCXO
       ? "CXO"
       : inApprover
       ? "Approver"
+      : inPR
+      ? "Person Responsible"
       : undefined;
 
     const submitComment = async () => {
       const text = window.prompt("Add a short comment / justification:");
       if (!text || !text.trim()) return;
+
       try {
-        const fd = new FormData();
-        fd.append("textEvidence", text.trim());
-        fd.append("uploadedBy", me);
-        const r = await fetch(
-          `${API_BASE_URL}/audit-issues/${issue.id}/evidence`,
-          {
-            method: "POST",
-            body: fd,
-          }
-        );
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const res = await fetch(`${API_BASE_URL}/comments`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            issueId: issue.id,
+            content: text.trim(),
+            actor: me,
+          }),
+        });
+
+        if (!res.ok) {
+          const payload = await res.json().catch(() => null);
+          const msg = payload?.error || `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+
         toast({ title: "Comment added" });
-        // refresh list so comments/evidence counts reflect
+        // refresh list so comments / evidence counts reflect
         loadMyIssues();
-      } catch (e: any) {
+      } catch (err: any) {
         toast({
           title: "Failed to add comment",
-          description: e.message,
+          description: err.message,
           variant: "destructive",
         });
       }
@@ -169,12 +200,14 @@ export const MyDashboard: React.FC = () => {
       ev
     ) => {
       const files = Array.from(ev.currentTarget.files || []);
-      ev.currentTarget.value = ""; // reset
+      ev.currentTarget.value = ""; // reset input so same file can be reselected later
       if (!files.length) return;
+
       try {
         const fd = new FormData();
         files.forEach((f) => fd.append("evidence", f, f.name));
         fd.append("uploadedBy", me);
+
         const r = await fetch(
           `${API_BASE_URL}/audit-issues/${issue.id}/evidence`,
           {
@@ -182,13 +215,19 @@ export const MyDashboard: React.FC = () => {
             body: fd,
           }
         );
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+        if (!r.ok) {
+          const payload = await r.json().catch(() => null);
+          const msg = payload?.error || `HTTP ${r.status}`;
+          throw new Error(msg);
+        }
+
         toast({ title: "Evidence uploaded" });
         loadMyIssues();
-      } catch (e: any) {
+      } catch (err: any) {
         toast({
           title: "Upload failed",
-          description: e.message,
+          description: err.message,
           variant: "destructive",
         });
       }
@@ -207,17 +246,20 @@ export const MyDashboard: React.FC = () => {
             <span>View</span>
           </Button>
         )}
+
         {commentAs && (
           <Button
             size="sm"
             variant="secondary"
             onClick={submitComment}
             title={`Add Comment as ${commentAs}`}
+            disabled={locked}
           >
             <MessageCircle className="h-4 w-4 mr-2" />
             Comment as {commentAs}
           </Button>
         )}
+
         {caps.canUploadEvidence && (
           <>
             <input

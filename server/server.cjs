@@ -156,6 +156,12 @@ async function sendEmail(toEmail, subject, htmlContent, ccEmail = []) {
   }
 }
 
+// normalize “Accepted” checks everywhere
+const isAccepted = (s) =>
+  String(s ?? "")
+    .trim()
+    .toLowerCase() === "accepted";
+
 /* ------------------------------ Mail templating ------------------------------ */
 const APP_NAME = process.env.APP_NAME || "CAM: Comprehensive Audit Management";
 const getAuditorList = () => [
@@ -288,6 +294,39 @@ async function initDb() {
     await auditPool.request().query(tableCheckQuery);
     console.log("✅ AuditIssues table is ready (AUDIT DB)");
 
+    // ⬇️ Add this after table creation checks
+    await auditPool.request().query(`
+  IF COL_LENGTH('dbo.AuditIssues','quarter') IS NULL
+  BEGIN
+    ALTER TABLE dbo.AuditIssues ADD quarter VARCHAR(10) NULL;
+    -- One-time backfill for existing rows: serialNumber >= 52 => Q2, else Q4
+    UPDATE dbo.AuditIssues
+      SET quarter = CASE WHEN serialNumber >= 52 THEN 'Q2' ELSE 'Q4' END
+      WHERE quarter IS NULL;
+  END
+`);
+
+    // Ensure Auditors table exists (email + processes JSON or delimited; "*" => all)
+    const auditorsTableCheck = `
+    IF NOT EXISTS (
+        SELECT 1
+          FROM sys.tables t
+          JOIN sys.schemas s ON t.schema_id = s.schema_id
+         WHERE t.name = 'Auditors'
+           AND s.name = 'dbo'
+    )
+    BEGIN
+        CREATE TABLE dbo.Auditors (
+            id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWID(),
+            email NVARCHAR(255) NOT NULL,
+            processes NVARCHAR(MAX) NULL,  -- JSON array OR "a;b;c" OR "*"
+            createdAt DATETIME2 NOT NULL DEFAULT GETDATE(),
+            updatedAt DATETIME2 NOT NULL DEFAULT GETDATE()
+        );
+    END;
+    `;
+    await auditPool.request().query(auditorsTableCheck);
+
     // Ensure OTP table exists in SPOT DB (distinct from other apps' Login table)
     const loginTableCheck = `
     IF NOT EXISTS (
@@ -380,6 +419,13 @@ const normRiskLevel = (r) => {
   return "medium";
 };
 
+const normQuarter = (q) => {
+  const s = String(q || "")
+    .trim()
+    .toUpperCase();
+  return ["Q1", "Q2", "Q3", "Q4"].includes(s) ? s : null;
+};
+
 // Accepts array, JSON-stringified array, or delimited string and returns string[]
 const toEmails = (val) => {
   if (!val) return [];
@@ -438,19 +484,312 @@ const AUDITOR_EMAILS = String(process.env.AUDITOR_EMAILS || "")
   .filter(Boolean);
 const STATIC_AUDITORS = [
   "santosh.kumar@protivitiglobal.in",
-  "aarnavsingh836@gmail.com",
+  "aarnav.singh@premierenergies.com",
   "borra.prasanna@protivitiglobal.in",
   "aman.shah@protivitiglobal.in",
 ];
 
-const isAuditorEmail = (em) => {
-  const email = String(em || "").toLowerCase();
-  const allowed = new Set([...AUDITOR_EMAILS, ...STATIC_AUDITORS]);
-  return allowed.has(email);
-};
+function parseProcesses(val) {
+  if (!val) return [];
+  if (Array.isArray(val))
+    return val.map((x) => String(x).trim()).filter(Boolean);
+  const s = String(val || "").trim();
+  if (!s) return [];
+  try {
+    const arr = JSON.parse(s);
+    if (Array.isArray(arr))
+      return arr.map((x) => String(x).trim()).filter(Boolean);
+  } catch (_) {}
+  return s
+    .split(/[;,]\s*/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+const getStaticAuditors = () =>
+  [...new Set([...AUDITOR_EMAILS, ...STATIC_AUDITORS])].map((x) =>
+    x.toLowerCase()
+  );
+
+async function listAuditorsFromDb() {
+  const connection = await auditPool.getConnection();
+  const [rows] = await connection.execute(
+    `SELECT id, email, processes, createdAt, updatedAt FROM dbo.Auditors ORDER BY createdAt DESC`
+  );
+  return (rows || []).map((r) => ({
+    id: r.id,
+    email: String(r.email || "").toLowerCase(),
+    processes: parseProcesses(r.processes),
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+function processesMatch(allowedList, proc) {
+  if (!allowedList?.length) return false;
+  return allowedList.some(
+    (p) =>
+      p === "*" ||
+      /^all$/i.test(p) ||
+      (proc && String(p).toLowerCase() === String(proc).toLowerCase())
+  );
+}
+
+async function isGlobalAuditor(email) {
+  const em = String(email || "").toLowerCase();
+  if (!em) return false;
+  if (getStaticAuditors().includes(em)) return true;
+  const dyn = await listAuditorsFromDb();
+  return dyn.some((r) => r.email === em && processesMatch(r.processes, "*"));
+}
+
+async function isAuditorEmail(email, processOpt = null) {
+  const em = String(email || "").toLowerCase();
+  if (!em) return false;
+  const statics = getStaticAuditors();
+  if (statics.includes(em)) return true;
+  const dyn = await listAuditorsFromDb();
+  if (!processOpt) return dyn.some((r) => r.email === em); // any DB row qualifies as "auditor"
+  return dyn.some(
+    (r) => r.email === em && processesMatch(r.processes, processOpt)
+  );
+}
+
+async function getAuditorsForProcess(procOpt = null) {
+  const out = new Set(getStaticAuditors());
+  const dyn = await listAuditorsFromDb();
+  for (const r of dyn) {
+    if (!procOpt || processesMatch(r.processes, procOpt)) out.add(r.email);
+  }
+  return [...out];
+}
+
+// 🔓 Single privileged unlocker (can bypass "Accepted" locks)
+const SPECIAL_UNLOCKER = "santosh.kumar@protivitiglobal.in";
+const isPrivilegedUnlocker = (em) =>
+  String(em || "").toLowerCase() === SPECIAL_UNLOCKER;
 app.use("/api", (req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
+});
+
+/* ---------------------------- Unlock (Accepted → open) ---------------------------- */
+app.post("/api/audit-issues/:id/unlock", async (req, res) => {
+  const { id } = req.params;
+  const actorRaw = (req.body?.actor || req.query?.actor || "")
+    .toString()
+    .trim();
+  const actor = normalizeToEmail(actorRaw);
+
+  const reason = (req.body?.reason || req.query?.reason || "")
+    .toString()
+    .trim();
+
+  if (!actor) return res.status(400).json({ error: "Missing actor" });
+  if (!isPrivilegedUnlocker(actor))
+    return res
+      .status(403)
+      .json({ error: "Only the designated unlocker can unlock." });
+
+  if (!reason) {
+    return res.status(400).json({ error: "Unlock reason is required" });
+  }
+
+  try {
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT * FROM dbo.AuditIssues WHERE id = ?`,
+      [id]
+    );
+    if (!rows.length)
+      return res.status(404).json({ error: "Audit issue not found" });
+    const row = rows[0];
+
+    if (!isAccepted(row.evidenceStatus)) {
+      return res.status(409).json({ error: "Issue is not in Accepted state." });
+    }
+
+    let currentEvidence = [];
+    try {
+      currentEvidence = JSON.parse(row.evidenceReceived || "[]");
+    } catch {}
+    const unlockEntry = {
+      id: Date.now() + "-unlock-" + Math.random().toString(36).substr(2, 9),
+      fileName: "System",
+      fileType: "text/plain",
+      fileSize: String(reason || "").length,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: actor,
+      content: `Issue unlocked by auditor for further edits/review. Reason: ${reason}`,
+    };
+    const updatedEvidence = [...currentEvidence, unlockEntry];
+
+    const nextStatus =
+      row.currentStatus === "Closed" ? "Closed" : "To Be Received";
+    await connection.execute(
+      `UPDATE dbo.AuditIssues
+           SET evidenceStatus = ?, currentStatus = ?, evidenceReceived = ?, updatedAt = GETDATE()
+         WHERE id = ?`,
+      ["Submitted", nextStatus, JSON.stringify(updatedEvidence), id]
+    );
+
+    // Reload
+    const [after] = await connection.execute(
+      `SELECT * FROM dbo.AuditIssues WHERE id = ?`,
+      [id]
+    );
+    const updated = after[0];
+    try {
+      updated.evidenceReceived = JSON.parse(updated.evidenceReceived || "[]");
+    } catch {}
+    updated.evidenceStatus =
+      updated.evidenceStatus ||
+      (updated.evidenceReceived?.length ? "Submitted" : undefined);
+    updated.isLocked = isAccepted(updated.evidenceStatus);
+
+    // Notify
+    const cc = getAuditorList();
+    const to = uniqEmails(
+      updated.personResponsible,
+      updated.approver,
+      updated.cxoResponsible
+    );
+    const subject = `${APP_NAME}, Unlocked (${updated.serialNumber})`;
+    const caption = `${updated.serialNumber} – ${updated.process} / ${updated.entityCovered}`;
+    const html = emailTemplate({
+      title: `🔓 ${APP_NAME}: Issue Unlocked`,
+      paragraphs: [
+        `<b>Issue:</b> ${caption}`,
+        `<b>Observation:</b> ${updated.observation || "—"}`,
+        `Unlocked by: ${actor}`,
+        `<b>Unlock Reason:</b> ${reason}`,
+        `Status set to: <b>Submitted</b> / ${nextStatus}`,
+        `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
+      ],
+    });
+
+    try {
+      await sendEmail(to, subject, html, cc);
+    } catch (e) {
+      console.warn("mail(unlock) failed:", e?.message || e);
+    }
+
+    return res.json(updated);
+  } catch (err) {
+    console.error("⛔ Unlock error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// server.cjs (near other /api routes)
+/* ------------------------------- Auditors CRUD ------------------------------ */
+// List all auditors (env/static + DB)
+app.get("/api/auditors", async (_req, res) => {
+  try {
+    const envRows = AUDITOR_EMAILS.map((email) => ({
+      id: null,
+      email,
+      processes: ["*"],
+      source: "env",
+    }));
+    const staticRows = STATIC_AUDITORS.map((email) => ({
+      id: null,
+      email,
+      processes: ["*"],
+      source: "static",
+    }));
+    const dbRowsRaw = await listAuditorsFromDb();
+    const dbRows = dbRowsRaw.map((r) => ({
+      id: r.id,
+      email: r.email,
+      processes: r.processes?.length ? r.processes : ["*"],
+      source: "db",
+    }));
+    // de-dup on email, prefer DB rows over env/static
+    const merged = new Map();
+    [...dbRows, ...envRows, ...staticRows].forEach((r) => {
+      if (!merged.has(r.email)) merged.set(r.email, r);
+    });
+    res.json(
+      [...merged.values()].sort((a, b) => a.email.localeCompare(b.email))
+    );
+  } catch (e) {
+    console.error("auditors:list", e);
+    res.status(500).json({ error: "Failed to load auditors" });
+  }
+});
+
+// Create
+app.post("/api/auditors", async (req, res) => {
+  try {
+    const actor = normalizeToEmail(req.body?.actor || req.query?.actor || "");
+    if (!actor || !(await isGlobalAuditor(actor))) {
+      return res
+        .status(403)
+        .json({ error: "Only global auditors can modify auditors list." });
+    }
+    const email = normalizeToEmail(req.body?.email || "");
+    const processes = parseProcesses(req.body?.processes || ["*"]);
+    if (!email) return res.status(400).json({ error: "email required" });
+    const procs = processes.length ? processes : ["*"];
+    const connection = await auditPool.getConnection();
+    await connection.execute(
+      `INSERT INTO dbo.Auditors (email, processes, createdAt, updatedAt)
+        VALUES (?, ?, GETDATE(), GETDATE())`,
+      [email.toLowerCase(), JSON.stringify(procs)]
+    );
+    res.status(201).json({ success: true });
+  } catch (e) {
+    console.error("auditors:create", e);
+    res.status(500).json({ error: "Failed to create auditor" });
+  }
+});
+
+// Update
+app.put("/api/auditors/:id", async (req, res) => {
+  try {
+    const actor = normalizeToEmail(req.body?.actor || req.query?.actor || "");
+    if (!actor || !(await isGlobalAuditor(actor))) {
+      return res
+        .status(403)
+        .json({ error: "Only global auditors can modify auditors list." });
+    }
+    const id = req.params.id;
+    const email = normalizeToEmail(req.body?.email || "");
+    const processes = parseProcesses(req.body?.processes || ["*"]);
+    if (!id) return res.status(400).json({ error: "id required" });
+    if (!email) return res.status(400).json({ error: "email required" });
+    const procs = processes.length ? processes : ["*"];
+    const connection = await auditPool.getConnection();
+    await connection.execute(
+      `UPDATE dbo.Auditors SET email = ?, processes = ?, updatedAt = GETDATE() WHERE id = ?`,
+      [email.toLowerCase(), JSON.stringify(procs), id]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    console.error("auditors:update", e);
+    res.status(500).json({ error: "Failed to update auditor" });
+  }
+});
+
+// Delete
+app.delete("/api/auditors/:id", async (req, res) => {
+  try {
+    const actor = normalizeToEmail(req.body?.actor || req.query?.actor || "");
+    if (!actor || !(await isGlobalAuditor(actor))) {
+      return res
+        .status(403)
+        .json({ error: "Only global auditors can modify auditors list." });
+    }
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ error: "id required" });
+    const connection = await auditPool.getConnection();
+    await connection.execute(`DELETE FROM dbo.Auditors WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error("auditors:delete", e);
+    res.status(500).json({ error: "Failed to delete auditor" });
+  }
 });
 
 /* ======================= OTP AUTH (SPOT: EMP + OTPs) ======================= */
@@ -473,7 +812,7 @@ app.post("/api/send-otp", async (req, res) => {
     let empID = null;
     if (empQ.recordset.length) {
       empID = String(empQ.recordset[0].EmpID ?? "");
-    } else if (!isAuditorEmail(fullEmail)) {
+    } else if (!(await isAuditorEmail(fullEmail))) {
       return res.status(404).json({
         message:
           "We do not have this email registered in EMP. If you have a company email ID, please contact HR.",
@@ -503,6 +842,7 @@ app.post("/api/send-otp", async (req, res) => {
       paragraphs: [
         "Hello,",
         `Use the following code to continue signing in to <b>${APP_NAME}</b>:`,
+        `Open <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> and enter this OTP.`,
       ],
       highlight: `<span style="font-size:22px;letter-spacing:3px;">${otp}</span>`,
       footerNote: `This code is valid for ${minutesValid} minutes.`,
@@ -582,7 +922,8 @@ app.get("/api/resolve-role", async (req, res) => {
     if (!fullEmail) return res.status(400).json({ role: "user" });
 
     // ✅ auditors first — even if not present in any issue lists
-    if (isAuditorEmail(fullEmail)) {
+    // auditors first — even if not present in any issue lists
+    if (await isAuditorEmail(fullEmail)) {
       return res.json({ role: "auditor" });
     }
 
@@ -679,9 +1020,10 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
 
     const id = uuidv4();
     const connection = await auditPool.getConnection();
+    const quarter = normQuarter(body.quarter) || null;
     const insertQuery = `
       INSERT INTO dbo.AuditIssues (
-        id, fiscalYear, date, process, entityCovered, observation, riskLevel,
+        id, fiscalYear, quarter, date, process, entityCovered, observation, riskLevel,
         recommendation, managementComment, personResponsible, approver,
         cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
         reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
@@ -714,6 +1056,7 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
     const values = [
       id,
       fiscalYear,
+      quarter,
       date,
       process,
       entityCovered,
@@ -749,15 +1092,17 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
     } catch {}
     // 📧 New Issue created — notify auditors (CC PR/Approver/CXO)
     try {
-      const to = getAuditorList();
-      const cc = uniqEmails(personResponsible, approver, cxoResponsible);
+      const cc = getAuditorList();
+      const to = uniqEmails(personResponsible, approver, cxoResponsible);
       const subject = `${APP_NAME}, New Audit Issue Created (${created.serialNumber})`;
       const html = emailTemplate({
-        title: `🆕 ${APP_NAME} — New Audit Issue Created`,
+        title: `🆕 ${APP_NAME}: New Audit Issue Created`,
         paragraphs: [
           `<b>Issue:</b> ${buildCaption(created)}`,
+          `<b>Observation:</b> ${created.observation || "—"}`,
           `<b>Risk:</b> ${created.riskLevel || "medium"}`,
           `<b>Due Date:</b> ${created.timeline || "—"}`,
+          `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
         ],
         footerNote: `You were included as Auditor (To) or Stakeholder (CC).`,
       });
@@ -770,6 +1115,333 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
   } catch (err) {
     console.error("⛔ Create issue error:", err);
     res.status(500).json({ error: "Failed to create audit issue" });
+  }
+});
+
+// ======================= Export Audit Issues (XLSX) =======================
+app.get("/api/audit-issues/export", async (req, res) => {
+  try {
+    const viewerRaw = String(req.query.viewer || "")
+      .trim()
+      .toLowerCase();
+    const scope = String(req.query.scope || "mine"); // "mine" | "all"
+    const viewer = normalizeToEmail(viewerRaw);
+
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(`
+      SELECT 
+        id, serialNumber, fiscalYear, quarter, date, process, entityCovered, observation,
+        riskLevel, recommendation, managementComment, personResponsible, approver,
+        cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived, evidenceStatus,
+        reviewComments, risk, actionRequired, startMonth, endMonth, annexure,
+        createdAt, updatedAt
+      FROM dbo.AuditIssues
+      ORDER BY createdAt DESC;
+    `);
+
+    const issues = rows.map((r) => {
+      let ev = [],
+        ax = [];
+      try {
+        ev = JSON.parse(r.evidenceReceived || "[]");
+      } catch {}
+      try {
+        ax = JSON.parse(r.annexure || "[]");
+      } catch {}
+      const effectiveEvidenceStatus =
+        r.evidenceStatus || (ev.length ? "Submitted" : null);
+      return {
+        ...r,
+        evidenceReceived: ev,
+        annexure: ax,
+        evidenceStatus: effectiveEvidenceStatus,
+      };
+    });
+
+    // 🔐 Enforce same visibility rules as the JSON list route
+    let filtered = issues;
+
+    if (scope === "all") {
+      if (!viewer) return res.status(400).json({ error: "viewer required" });
+      const isGlobal = await isGlobalAuditor(viewer);
+      if (!isGlobal) {
+        const dyn = await listAuditorsFromDb();
+        const me = dyn.find((r) => r.email === viewer.toLowerCase());
+        if (!me) return res.status(403).json({ error: "forbidden" });
+        const allowed = new Set(
+          me.processes.map((p) => String(p || "").toLowerCase())
+        );
+        filtered = issues.filter((r) => {
+          const proc = String(r.process || "").toLowerCase();
+          return allowed.has("*") || allowed.has("all") || allowed.has(proc);
+        });
+      }
+    } else {
+      if (!viewer) return res.status(400).json({ error: "viewer required" });
+      filtered = issues.filter((r) => {
+        const toks = [
+          r.personResponsible,
+          r.approver,
+          r.cxoResponsible,
+        ].flatMap((s) =>
+          String(s || "")
+            .toLowerCase()
+            .split(/[;,]\s*/)
+            .map((x) => x.trim())
+            .filter(Boolean)
+        );
+        return toks.includes(viewer.toLowerCase());
+      });
+    }
+
+    // Shape clean export rows (friendly headers, counts instead of blobs)
+    const exportRows = filtered.map((r) => ({
+      "Serial #": r.serialNumber,
+      "Fiscal Year": r.fiscalYear,
+      Quarter: r.quarter || "",
+      Date: r.date ? new Date(r.date).toISOString().slice(0, 10) : "",
+      Process: r.process,
+      "Entity Covered": r.entityCovered,
+      Observation: r.observation,
+      "Risk Level": r.riskLevel,
+      Recommendation: r.recommendation,
+      "Management Comment": r.managementComment,
+      "Person Responsible": r.personResponsible,
+      Approver: r.approver,
+      "CXO Responsible": r.cxoResponsible,
+      "Co-Owner": r.coOwner,
+      "Due Date": r.timeline
+        ? new Date(r.timeline).toISOString().slice(0, 10)
+        : "",
+      "Current Status": r.currentStatus,
+      "Evidence Status": r.evidenceStatus || "",
+      "Review Comments": r.reviewComments,
+      Risk: r.risk,
+      "Action Required": r.actionRequired,
+      "Coverage Start Month": r.startMonth,
+      "Coverage End Month": r.endMonth,
+      "Evidence Count": Array.isArray(r.evidenceReceived)
+        ? r.evidenceReceived.length
+        : 0,
+      "Annexure Count": Array.isArray(r.annexure) ? r.annexure.length : 0,
+      "Created At": r.createdAt,
+      "Updated At": r.updatedAt,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Audit_Issues");
+
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    const filename = `Audit_Issues_${scope}_${new Date()
+      .toISOString()
+      .slice(0, 10)}.xlsx`;
+
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    res.type(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.send(buf);
+  } catch (err) {
+    console.error("⛔ Export generation error:", err);
+    res.status(500).json({ error: "Failed to export audit issues" });
+  }
+});
+
+// ======================= Export filtered (XLSX, by Analytics filters) =======================
+app.get("/api/audit-issues/export-filtered", async (req, res) => {
+  try {
+    const viewerRaw = String(req.query.viewer || "")
+      .trim()
+      .toLowerCase();
+    const scope = String(req.query.scope || "mine"); // "mine" | "all"
+    const mode = String(req.query.mode || "upcoming"); // "upcoming" | "recent" | "overdue"
+    const days = Math.max(1, Number(req.query.days || 90)); // 30/60/90 (default 90)
+    const viewer = normalizeToEmail(viewerRaw);
+
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(`
+      SELECT 
+        id, serialNumber, fiscalYear, quarter, date, process, entityCovered, observation,
+        riskLevel, recommendation, managementComment, personResponsible, approver,
+        cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived, evidenceStatus,
+        reviewComments, risk, actionRequired, startMonth, endMonth, annexure,
+        createdAt, updatedAt
+      FROM dbo.AuditIssues
+      ORDER BY createdAt DESC;
+    `);
+
+    // normalize like the JSON list route
+    const issues = rows.map((r) => {
+      let ev = [],
+        ax = [];
+      try {
+        ev = JSON.parse(r.evidenceReceived || "[]");
+      } catch {}
+      try {
+        ax = JSON.parse(r.annexure || "[]");
+      } catch {}
+      const effectiveEvidenceStatus =
+        r.evidenceStatus || (ev.length ? "Submitted" : null);
+      return {
+        ...r,
+        evidenceReceived: ev,
+        annexure: ax,
+        evidenceStatus: effectiveEvidenceStatus,
+      };
+    });
+
+    // scope enforcement (same as the other export)
+    let scoped = issues;
+    if (scope === "all") {
+      if (!viewer) return res.status(400).json({ error: "viewer required" });
+      const isGlobal = await isGlobalAuditor(viewer);
+      if (!isGlobal) {
+        const dyn = await listAuditorsFromDb();
+        const me = dyn.find((r) => r.email === viewer.toLowerCase());
+        if (!me) return res.status(403).json({ error: "forbidden" });
+        const allowed = new Set(
+          me.processes.map((p) => String(p || "").toLowerCase())
+        );
+        scoped = issues.filter((r) => {
+          const proc = String(r.process || "").toLowerCase();
+          return allowed.has("*") || allowed.has("all") || allowed.has(proc);
+        });
+      }
+    } else {
+      if (!viewer) return res.status(400).json({ error: "viewer required" });
+      scoped = issues.filter((r) => {
+        const toks = [
+          r.personResponsible,
+          r.approver,
+          r.cxoResponsible,
+        ].flatMap((s) =>
+          String(s || "")
+            .toLowerCase()
+            .split(/[;,]\s*/)
+            .map((x) => x.trim())
+            .filter(Boolean)
+        );
+        return toks.includes(viewer.toLowerCase());
+      });
+    }
+
+    // helper: what's "closed/accepted" and "due date"
+    const isClosedEq = (r) =>
+      String(r.currentStatus || "").toLowerCase() === "closed" ||
+      String(r.evidenceStatus || "").toLowerCase() === "accepted";
+    const dueDateOf = (r) => (r.timeline ? new Date(r.timeline) : null);
+
+    // time window
+    const today = new Date();
+    const start = new Date(today);
+    start.setDate(start.getDate() - days);
+    const end = new Date(today);
+    end.setDate(end.getDate() + days);
+    const startDateOnly = new Date(start.toISOString().slice(0, 10));
+    const endDateOnly = new Date(end.toISOString().slice(0, 10));
+    const todayDateOnly = new Date(today.toISOString().slice(0, 10));
+
+    // filter based on Analytics' modes
+    let filtered = [];
+    if (mode === "recent") {
+      // accepted/closed within last N days — approximate using updatedAt when closed/accepted
+      filtered = scoped
+        .filter((r) => {
+          if (!isClosedEq(r)) return false;
+          const upd = r.updatedAt ? new Date(r.updatedAt) : null;
+          if (!upd) return false;
+          const d = new Date(upd.toISOString().slice(0, 10));
+          return d >= startDateOnly && d <= todayDateOnly;
+        })
+        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    } else if (mode === "overdue") {
+      // overdue in the last N days: timeline < today AND >= start (and not closed)
+      filtered = scoped
+        .filter((r) => {
+          if (isClosedEq(r)) return false;
+          const d = dueDateOf(r);
+          if (!d) return false;
+          const dd = new Date(d.toISOString().slice(0, 10));
+          return dd < todayDateOnly && dd >= startDateOnly;
+        })
+        .sort((a, b) => new Date(a.timeline || 0) - new Date(b.timeline || 0));
+    } else {
+      // upcoming: due between today and end (inclusive), not closed
+      filtered = scoped
+        .filter((r) => {
+          if (isClosedEq(r)) return false;
+          const d = dueDateOf(r);
+          if (!d) return false;
+          const dd = new Date(d.toISOString().slice(0, 10));
+          return dd >= todayDateOnly && dd <= endDateOnly;
+        })
+        .sort((a, b) => new Date(a.timeline || 0) - new Date(b.timeline || 0));
+    }
+
+    // shape friendly rows (detailed)
+    const daysBetween = (a, b) => Math.floor((a - b) / 86400000);
+    const agingText = (r) => {
+      const d = dueDateOf(r);
+      if (!d) return "";
+      const dd = new Date(d.toISOString().slice(0, 10));
+      const t0 = todayDateOnly;
+      const diff = daysBetween(t0, dd);
+      if (diff > 0) return `${diff} day(s) overdue`;
+      if (diff === 0) return `due today`;
+      return `in ${Math.abs(diff)} day(s)`;
+    };
+
+    const exportRows = filtered.map((r) => ({
+      "Serial #": r.serialNumber,
+      "Fiscal Year": r.fiscalYear,
+      Quarter: r.quarter || "",
+      Date: r.date ? new Date(r.date).toISOString().slice(0, 10) : "",
+      Process: r.process,
+      "Entity Covered": r.entityCovered,
+      Observation: r.observation,
+      "Risk Level": r.riskLevel,
+      Recommendation: r.recommendation,
+      "Management Comment": r.managementComment,
+      "Person Responsible": r.personResponsible,
+      Approver: r.approver,
+      "CXO Responsible": r.cxoResponsible,
+      "Co-Owner": r.coOwner,
+      "Due Date": r.timeline
+        ? new Date(r.timeline).toISOString().slice(0, 10)
+        : "",
+      "Current Status": r.currentStatus,
+      "Evidence Status": r.evidenceStatus || "",
+      "Review Comments": r.reviewComments,
+      Risk: r.risk,
+      "Action Required": r.actionRequired,
+      "Coverage Start Month": r.startMonth,
+      "Coverage End Month": r.endMonth,
+      "Accepted/Updated On": r.updatedAt
+        ? new Date(r.updatedAt).toISOString().slice(0, 10)
+        : "",
+      Aging: agingText(r),
+      "Created At": r.createdAt,
+      "Updated At": r.updatedAt,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Filtered_Report");
+
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    const filename = `Audit_Report_${mode}_${days}d_${new Date()
+      .toISOString()
+      .slice(0, 10)}.xlsx`;
+
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    res.type(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    return res.send(buf);
+  } catch (err) {
+    console.error("⛔ Export filtered error:", err);
+    return res.status(500).json({ error: "Failed to export filtered report" });
   }
 });
 
@@ -845,7 +1517,7 @@ app.post(
       const connection = await auditPool.getConnection();
       const insertQuery = `
       INSERT INTO dbo.AuditIssues (
-        id, fiscalYear, date, process, entityCovered, observation, riskLevel,
+        id, fiscalYear, quarter, date, process, entityCovered, observation, riskLevel,
         recommendation, managementComment, personResponsible, approver,
         cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
         reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
@@ -905,6 +1577,9 @@ app.post(
             ""
           );
           const annexureRaw = val(row, "annexure", "");
+          // read from sheet if present and normalize
+          const quarterRaw = valAny(row, ["quarter", "qtr"], "");
+          const quarter = normQuarter(quarterRaw) || null;
 
           // NEW: optional comment columns from the latest template
           const cxoFurther = valAny(
@@ -971,6 +1646,7 @@ app.post(
           await connection.execute(insertQuery, [
             id,
             fiscalYear,
+            quarter,
             formatDate(new Date()),
             process,
             entityCovered,
@@ -1023,7 +1699,7 @@ app.get("/api/audit-issues", async (req, res) => {
     const connection = await auditPool.getConnection();
     const [rows] = await connection.execute(`
       SELECT 
-        id, serialNumber, fiscalYear, date, process,
+        id, serialNumber, fiscalYear, quarter, date, process,
         entityCovered, observation, riskLevel, recommendation,
         managementComment, personResponsible, approver, cxoResponsible,
         coOwner, timeline, currentStatus, evidenceReceived, evidenceStatus,
@@ -1045,7 +1721,7 @@ app.get("/api/audit-issues", async (req, res) => {
       // derive a useful transient status for display if DB is NULL but evidence exists
       const effectiveEvidenceStatus =
         r.evidenceStatus || (ev.length ? "Submitted" : null);
-      const isLocked = String(effectiveEvidenceStatus || "") === "Accepted";
+      const isLocked = isAccepted(effectiveEvidenceStatus);
       return {
         ...r,
         evidenceReceived: ev,
@@ -1057,13 +1733,22 @@ app.get("/api/audit-issues", async (req, res) => {
 
     // 🔐 enforce scope
     if (scope === "all") {
-      // Require a viewer and ensure that viewer is an auditor
       if (!viewer) return res.status(400).json({ error: "viewer required" });
-      if (!isAuditorEmail(viewer))
-        return res.status(403).json({ error: "forbidden" });
+      const isGlobal = await isGlobalAuditor(viewer);
+      if (!isGlobal) {
+        // process-scoped auditor: return only issues they’re allowed to see
+        const dyn = await listAuditorsFromDb();
+        const me = dyn.find((r) => r.email === viewer.toLowerCase());
+        if (!me) return res.status(403).json({ error: "forbidden" });
+        const allowed = new Set(me.processes.map((p) => p.toLowerCase()));
+        const filtered = issues.filter((r) => {
+          const proc = String(r.process || "").toLowerCase();
+          return allowed.has("*") || allowed.has("all") || allowed.has(proc);
+        });
+        return res.status(200).json(filtered);
+      }
       return res.status(200).json(issues);
     }
-
     // Default: "mine" — require viewer and filter
     if (!viewer) return res.status(400).json({ error: "viewer required" });
 
@@ -1087,34 +1772,56 @@ app.get("/api/audit-issues", async (req, res) => {
   }
 });
 /* ------------------------ Evidence upload (multiple) ------------------------ */
+/* ------------------------ Evidence upload (multiple) ------------------------ */
+// CMD-F ANCHOR: /api/audit-issues/:id/evidence
 app.post(
   "/api/audit-issues/:id/evidence",
   diskUpload.array("evidence"),
   async (req, res) => {
     const issueId = req.params.id;
-    const uploadedBy = req.body.uploadedBy || "Unknown";
+    const uploadedByRaw = req.body.uploadedBy || "Unknown";
+    const uploadedBy = normalizeToEmail(uploadedByRaw);
     const textEvidence = (req.body.textEvidence || "").trim();
     const justification = (req.body.justification || "").trim();
+
+    if (!uploadedBy) {
+      return res.status(400).json({ error: "Missing uploadedBy" });
+    }
 
     try {
       const connection = await auditPool.getConnection();
       const [rows] = await connection.execute(
         `SELECT evidenceReceived, evidenceStatus, currentStatus,
-                        personResponsible, cxoResponsible, approver,
-                        serialNumber, process, entityCovered
-                 FROM dbo.AuditIssues
-                  WHERE id = ?`,
+                personResponsible, cxoResponsible, approver,
+                serialNumber, process, entityCovered, observation
+           FROM dbo.AuditIssues
+          WHERE id = ?`,
         [issueId]
       );
 
-      if (rows.length === 0)
+      if (!rows.length)
         return res.status(404).json({ error: "Audit issue not found" });
 
       const row = rows[0];
-      // hard-lock guard (kept server-side even though UI blocks)
-      if (String(row.evidenceStatus || "") === "Accepted") {
+
+      // Hard lock: when Accepted, uploads are blocked for everyone until unlocked
+      if (isAccepted(row.evidenceStatus)) {
         return res.status(423).json({ error: "Issue is locked (Accepted)." });
       }
+
+      // ✅ Server-side permission: only PR or auditors can upload evidence
+      const prList = toEmails(row.personResponsible).map((e) =>
+        normalizeToEmail(e).toLowerCase()
+      );
+      const isPR = prList.includes(uploadedBy.toLowerCase());
+      const isAud = await isAuditorEmail(uploadedBy);
+
+      if (!isPR && !isAud) {
+        return res.status(403).json({
+          error: "Only Person Responsible or auditors can upload evidence.",
+        });
+      }
+
       let currentEvidence = [];
       try {
         currentEvidence = JSON.parse(row.evidenceReceived || "[]");
@@ -1130,10 +1837,11 @@ app.post(
         path: path.relative(__dirname, file.path),
       }));
 
+      // Still allow PR/auditor to attach a text note alongside files
       if (textEvidence) {
         newEntries.unshift({
           id: Date.now() + "-txt-" + Math.random().toString(36).substr(2, 9),
-          fileName: "Comment",
+          fileName: "Comment with Evidence",
           fileType: "text/plain",
           fileSize: textEvidence.length,
           uploadedAt: new Date().toISOString(),
@@ -1158,13 +1866,14 @@ app.post(
       const nextEvidenceStatus = "Submitted";
       const nextCurrentStatus =
         row.currentStatus === "Closed" ? "Closed" : "To Be Received";
+
       await connection.execute(
         `UPDATE dbo.AuditIssues
-                  SET evidenceReceived = ?,
-                      evidenceStatus   = ?,
-                      currentStatus    = ?,
-                      updatedAt        = GETDATE()
-                WHERE id = ?`,
+            SET evidenceReceived = ?,
+                evidenceStatus   = ?,
+                currentStatus    = ?,
+                updatedAt        = GETDATE()
+          WHERE id = ?`,
         [
           JSON.stringify(updatedEvidence),
           nextEvidenceStatus,
@@ -1175,8 +1884,8 @@ app.post(
 
       const caption = `${row.serialNumber} – ${row.process} / ${row.entityCovered}`;
       const attachmentsCount = (req.files || []).length;
-      const to = getAuditorList();
-      const cc = uniqEmails(
+      const cc = getAuditorList();
+      const to = uniqEmails(
         row.personResponsible,
         row.approver,
         row.cxoResponsible
@@ -1188,6 +1897,7 @@ app.post(
           textEvidence ? " and added a comment" : ""
         } for <b>${caption}</b>.`,
         `Please review in <a href="https://audit.premierenergies.com">audit.premierenergies.com</a>.`,
+        `<b>Observation:</b> ${row.observation || "—"}`,
       ];
       const highlight = textEvidence
         ? `<div style="text-align:left;"><div style="font-weight:600;margin-bottom:6px;">Comment:</div>${textEvidence.replace(
@@ -1197,7 +1907,7 @@ app.post(
         : "";
 
       const html = emailTemplate({
-        title: `📎 ${APP_NAME} — Evidence Uploaded`,
+        title: `📎 ${APP_NAME}: Evidence Uploaded`,
         paragraphs: parts,
         highlight,
       });
@@ -1211,6 +1921,67 @@ app.post(
     } catch (err) {
       console.error("⛔ Evidence upload error:", err);
       res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/* -------------------------- Annexure upload (files) ------------------------- */
+// POST /api/audit-issues/:id/annexure
+// Field name: "annexure" (matches EditAuditModal.tsx)
+app.post(
+  "/api/audit-issues/:id/annexure",
+  diskUpload.array("annexure"),
+  async (req, res) => {
+    const issueId = req.params.id;
+
+    try {
+      const connection = await auditPool.getConnection();
+      const [rows] = await connection.execute(
+        `SELECT annexure FROM dbo.AuditIssues WHERE id = ?`,
+        [issueId]
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({ error: "Audit issue not found" });
+      }
+
+      // Parse current annexure JSON (if any)
+      let currentAnnexure = [];
+      try {
+        currentAnnexure = JSON.parse(rows[0].annexure || "[]");
+        if (!Array.isArray(currentAnnexure)) currentAnnexure = [];
+      } catch {
+        currentAnnexure = [];
+      }
+
+      // Map uploaded files into annexure entries
+      const newEntries = (req.files || []).map((file) => ({
+        name: file.originalname,
+        path: path.relative(__dirname, file.path),
+        size: file.size,
+        type: file.mimetype,
+        uploadedAt: new Date().toISOString(),
+      }));
+
+      const updatedAnnexure = [...currentAnnexure, ...newEntries];
+
+      await connection.execute(
+        `UPDATE dbo.AuditIssues
+           SET annexure = ?, updatedAt = GETDATE()
+         WHERE id = ?`,
+        [JSON.stringify(updatedAnnexure), issueId]
+      );
+
+      // Return JSON so EditAuditModal's upRes.json() works
+      return res.json({
+        success: true,
+        annexure: updatedAnnexure,
+      });
+    } catch (err) {
+      console.error("⛔ Annexure upload error:", err);
+      return res
+        .status(500)
+        .json({ error: "Failed to upload annexure attachments" });
     }
   }
 );
@@ -1233,7 +2004,7 @@ app.post("/api/comments", async (req, res) => {
     const connection = await auditPool.getConnection();
 
     const [rows] = await connection.execute(
-      `SELECT id, serialNumber, process, entityCovered, evidenceReceived, evidenceStatus,
+      `SELECT id, serialNumber, process, entityCovered, observation, evidenceReceived, evidenceStatus,
               personResponsible, approver, cxoResponsible, currentStatus
          FROM dbo.AuditIssues
         WHERE id = ?`,
@@ -1245,7 +2016,7 @@ app.post("/api/comments", async (req, res) => {
     const row = rows[0];
 
     // (Same lock policy as evidence uploads. If you prefer to allow comments after acceptance, remove this.)
-    if (String(row.evidenceStatus || "") === "Accepted") {
+    if (isAccepted(row.evidenceStatus)) {
       return res.status(423).json({ error: "Issue is locked (Accepted)." });
     }
 
@@ -1256,7 +2027,7 @@ app.post("/api/comments", async (req, res) => {
     const isPR = prList.includes(actor.toLowerCase());
     const isAppr = apprList.includes(actor.toLowerCase());
     const isCXO = cxoList.includes(actor.toLowerCase());
-    const isAud = isAuditorEmail(actor);
+    const isAud = await isAuditorEmail(actor);
 
     if (!(isPR || isAppr || isCXO || isAud)) {
       return res
@@ -1288,8 +2059,8 @@ app.post("/api/comments", async (req, res) => {
     );
 
     // Email (TO auditors, CC stakeholders)
-    const to = getAuditorList();
-    const cc = uniqEmails(
+    const cc = getAuditorList();
+    const to = uniqEmails(
       row.personResponsible,
       row.approver,
       row.cxoResponsible
@@ -1307,9 +2078,10 @@ app.post("/api/comments", async (req, res) => {
 
     const subject = `${APP_NAME}, New Comment (${row.serialNumber})`;
     const html = emailTemplate({
-      title: `💬 ${APP_NAME} — New Comment`,
+      title: `💬 ${APP_NAME}: New Comment`,
       paragraphs: [
         `<b>Issue:</b> ${caption}`,
+        `<b>Observation:</b> ${row.observation || "—"}`,
         `<b>By:</b> ${actor} (${actorRole})`,
         `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
       ],
@@ -1356,7 +2128,7 @@ app.delete("/api/audit-issues/:id/evidence/:evid", async (req, res) => {
       return res.status(404).json({ error: "Audit issue not found" });
 
     const row = rows[0];
-    if (String(row.evidenceStatus || "") === "Accepted") {
+    if (isAccepted(row.evidenceStatus)) {
       return res.status(423).json({ error: "Issue is locked (Accepted)." });
     }
 
@@ -1393,6 +2165,217 @@ app.delete("/api/audit-issues/:id/evidence/:evid", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+/* ---------------------- Nudge: pending (not accepted) ---------------------- */
+// POST /api/audit-issues/notify-pending
+// Body or query must include { actor: "<auditor email>" }
+// Optional: ?dryRun=true to preview recipients (no emails sent)
+// ---- consolidated notifier (works for GET and POST) ----
+async function notifyPendingHandler(req, res) {
+  const actorRaw = (req.body?.actor || req.query?.actor || "")
+    .toString()
+    .trim();
+  const actor = normalizeToEmail(actorRaw);
+  const dryRun =
+    String(req.query?.dryRun || req.body?.dryRun || "")
+      .toLowerCase()
+      .trim() === "true";
+
+  try {
+    if (!actor) {
+      return res.status(400).json({ error: "actor is required" });
+    }
+    if (!(await isAuditorEmail(actor))) {
+      return res.status(403).json({ error: "Only auditors can send nudges." });
+    }
+
+    // Load all "pending" issues (not Accepted, not Closed)
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(`
+      SELECT id, serialNumber, process, entityCovered, observation, timeline,
+             currentStatus, evidenceStatus,
+             personResponsible, approver, cxoResponsible
+        FROM dbo.AuditIssues
+       WHERE (evidenceStatus IS NULL OR evidenceStatus <> 'Accepted')
+         AND (currentStatus  IS NULL OR currentStatus  <> 'Closed')
+       ORDER BY timeline ASC, createdAt DESC;
+    `);
+
+    // Process-scope guard: a non-global auditor only nudges within allowed processes
+    const isGlobal = await isGlobalAuditor(actor);
+    let allowed = null;
+    if (!isGlobal) {
+      const dyn = await listAuditorsFromDb();
+      const me = dyn.find((r) => r.email === actor.toLowerCase());
+      const set = new Set(
+        (me?.processes || []).map((p) => String(p || "").toLowerCase())
+      );
+      allowed = (proc) =>
+        set.has("*") ||
+        set.has("all") ||
+        set.has(String(proc || "").toLowerCase());
+    } else {
+      allowed = () => true;
+    }
+
+    // Group per-person with role tagging
+    const recipients = new Map(); // email -> { email, items: Map(issueId -> item) }
+    const add = (recEmail, row, role) => {
+      const em = normalizeToEmail(recEmail);
+      if (!em || !allowed(row.process)) return;
+      let bucket = recipients.get(em);
+      if (!bucket) {
+        bucket = { email: em, items: new Map() };
+        recipients.set(em, bucket);
+      }
+      const existing = bucket.items.get(row.id);
+      if (existing) {
+        existing.roles.add(role);
+      } else {
+        bucket.items.set(row.id, {
+          id: row.id,
+          serialNumber: row.serialNumber,
+          process: row.process,
+          entityCovered: row.entityCovered,
+          observation: row.observation,
+          timeline: row.timeline,
+          currentStatus: row.currentStatus,
+          evidenceStatus: row.evidenceStatus,
+          roles: new Set([role]),
+        });
+      }
+    };
+
+    for (const r of rows) {
+      toEmails(r.personResponsible).forEach((e) => add(e, r, "PR"));
+      toEmails(r.approver).forEach((e) => add(e, r, "Approver"));
+      toEmails(r.cxoResponsible).forEach((e) => add(e, r, "CXO"));
+    }
+
+    if (!recipients.size) {
+      return res.json({
+        message: "No pending issues to nudge.",
+        recipients: [],
+      });
+    }
+
+    const ccAuditors = getAuditorList();
+    const todayDateOnly = new Date(new Date().toISOString().slice(0, 10));
+
+    const dateStr = (d) => {
+      if (!d) return "—";
+      try {
+        const dt = new Date(d);
+        return isNaN(dt) ? "—" : dt.toISOString().slice(0, 10);
+      } catch {
+        return "—";
+      }
+    };
+    const aging = (d) => {
+      if (!d) return "";
+      const due = new Date(new Date(d).toISOString().slice(0, 10));
+      const diffDays = Math.floor((due - todayDateOnly) / 86400000);
+      if (diffDays > 0) return `in ${diffDays} day(s)`;
+      if (diffDays === 0) return `due today`;
+      return `${Math.abs(diffDays)} day(s) overdue`;
+    };
+
+    const makeTable = (items) => {
+      const sorted = items.slice().sort((a, b) => {
+        const ta = a.timeline ? new Date(a.timeline).getTime() : Infinity;
+        const tb = b.timeline ? new Date(b.timeline).getTime() : Infinity;
+        return ta - tb || (a.serialNumber || 0) - (b.serialNumber || 0);
+      });
+
+      const rowsHtml = sorted
+        .map((it, idx) => {
+          const zebra = idx % 2 ? "background:#fafbff;" : "";
+          const roleTxt = [...it.roles].join(", ");
+          return `
+          <tr style="${zebra}">
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;"><b>${
+              it.serialNumber || ""
+            }</b></td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${
+              it.process || ""
+            } / ${it.entityCovered || ""}</td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${roleTxt}</td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${dateStr(
+              it.timeline
+            )}<div style="color:#6b7280;font-size:12px;">${aging(
+            it.timeline
+          )}</div></td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${
+              it.currentStatus || "To Be Received"
+            }</td>
+          </tr>`;
+        })
+        .join("");
+
+      return `
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e6e8eb;border-radius:8px;overflow:hidden;">
+        <thead>
+          <tr style="background:#f4f6ff;">
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Serial #</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Process / Entity</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Your Role</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Due</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Status</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>`;
+    };
+
+    const results = [];
+    for (const [, rec] of recipients) {
+      const items = [...rec.items.values()];
+      const count = items.length;
+
+      const table = makeTable(items);
+      const subject = `${APP_NAME}, Pending Actions — ${count} issue(s)`;
+      const html = emailTemplate({
+        title: `📝 ${APP_NAME}: Pending Audit Actions`,
+        paragraphs: [
+          `You are listed as <b>Person Responsible</b>, <b>Approver</b>, or <b>CXO</b> on the following <b>${count}</b> open issue(s) that are <b>not accepted</b>.`,
+          `Please review and take action in the portal.`,
+          table,
+        ],
+        highlight: `<a href="https://audit.premierenergies.com" style="text-decoration:none;display:inline-block;padding:10px 14px;border:1px solid #0b5fff;border-radius:6px;font-weight:600;">Open CAM Portal</a>`,
+        footerNote: `This message consolidates all of your pending items across roles. Auditors are CC’d.`,
+      });
+
+      results.push({ email: rec.email, count });
+
+      if (!dryRun) {
+        try {
+          await sendEmail(rec.email, subject, html, ccAuditors);
+        } catch (e) {
+          console.warn(
+            "mail(nudge-pending) failed:",
+            rec.email,
+            e?.message || e
+          );
+        }
+      }
+    }
+
+    return res.json({
+      message: dryRun ? "Dry run complete (no emails sent)" : "Nudges sent",
+      recipients: results.sort((a, b) => b.count - a.count),
+      totalRecipients: results.length,
+      totalIssuesCovered: rows.length,
+      scope: isGlobal ? "global" : "process-scoped",
+    });
+  } catch (err) {
+    console.error("⛔ notify-pending error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// Wire up both verbs so a plain browser GET works too
+app.post("/api/audit-issues/notify-pending", notifyPendingHandler);
+app.get("/api/audit-issues/notify-pending", notifyPendingHandler);
 
 /* --------------------------- Auditor review (PUT) --------------------------- */
 app.put("/api/audit-issues/:id/review", async (req, res) => {
@@ -1440,8 +2423,8 @@ app.put("/api/audit-issues/:id/review", async (req, res) => {
     const updated = updatedRows[0];
 
     // mail — TO auditors, CC stakeholders
-    const to = getAuditorList();
-    const cc = uniqEmails(
+    const cc = getAuditorList();
+    const to = uniqEmails(
       updated.personResponsible,
       updated.approver,
       updated.cxoResponsible
@@ -1457,10 +2440,12 @@ app.put("/api/audit-issues/:id/review", async (req, res) => {
     const subject = `${APP_NAME}, ${evidenceStatus} (${updated.serialNumber})`;
 
     const html = emailTemplate({
-      title: `${icon} ${APP_NAME} — ${evidenceStatus}`,
+      title: `${icon} ${APP_NAME}: ${evidenceStatus}`,
       paragraphs: [
         `<b>Issue:</b> ${caption}`,
+        `<b>Observation:</b> ${updated.observation || "—"}`,
         `<b>Status:</b> ${evidenceStatus}`,
+        `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
       ],
       highlight: reviewComments
         ? `<div style="text-align:left;"><div style="font-weight:600;margin-bottom:6px;">Auditor Comment:</div>${String(
@@ -1485,7 +2470,7 @@ app.put("/api/audit-issues/:id/review", async (req, res) => {
       updated.evidenceReceived.length
         ? "Submitted"
         : undefined);
-    updated.isLocked = String(updated.evidenceStatus || "") === "Accepted";
+    updated.isLocked = isAccepted(updated.evidenceStatus);
 
     res.status(200).json(updated);
   } catch (err) {
@@ -1496,164 +2481,206 @@ app.put("/api/audit-issues/:id/review", async (req, res) => {
 
 /* ------------------------------ Update an issue ----------------------------- */
 // Safeguard: if evidenceStatus === 'Accepted', block changes to 'observation'
-app.put("/api/audit-issues/:id", memoryUpload.none(), async (req, res) => {
-  const { id } = req.params;
-  const actorRaw = (req.body?.actor || req.query?.actor || "")
-    .toString()
-    .trim();
-  const actor = normalizeToEmail(actorRaw);
+// Safeguard: if evidenceStatus === 'Accepted', block changes to 'observation'
+app.put(
+  "/api/audit-issues/:id",
+  diskUpload.any(), // ⬅️ changed from memoryUpload.none()
+  async (req, res) => {
+    const { id } = req.params;
+    const actorRaw = (req.body?.actor || req.query?.actor || "")
+      .toString()
+      .trim();
+    const actor = normalizeToEmail(actorRaw);
 
-  const fields = req.body || {};
+    const fields = req.body || {};
 
-  const row = await getIssueRow(id);
-  if (!row) return res.status(404).json({ error: "Not found" });
-  if (isLocked(row)) return lockedRes(res);
+    const row = await getIssueRow(id);
+    if (!row) return res.status(404).json({ error: "Not found" });
+    if (isLocked(row)) return lockedRes(res);
 
-  const connection = await auditPool.getConnection();
-  const [rows] = await connection.execute(
-    `SELECT evidenceStatus FROM dbo.AuditIssues WHERE id = ?`,
-    [id]
-  );
-  if (!rows.length) return res.status(404).json({ error: "Not found" });
-
-  const accepted = rows[0].evidenceStatus === "Accepted";
-  if (accepted && typeof fields.observation === "string") {
-    return res
-      .status(400)
-      .json({ error: "Observation cannot be edited after acceptance." });
-  }
-
-  // ✅ EMP validation if any of these fields are being updated
-  const candidateLists = [];
-  if (typeof fields.personResponsible === "string") {
-    candidateLists.push(
-      ...toEmails(fields.personResponsible).map(normalizeToEmail)
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(
+      `SELECT evidenceStatus FROM dbo.AuditIssues WHERE id = ?`,
+      [id]
     );
-  }
-  if (typeof fields.approver === "string") {
-    candidateLists.push(...toEmails(fields.approver).map(normalizeToEmail));
-  }
-  if (typeof fields.cxoResponsible === "string") {
-    candidateLists.push(
-      ...toEmails(fields.cxoResponsible).map(normalizeToEmail)
-    );
-  }
-  if (typeof fields.coOwner === "string") {
-    candidateLists.push(...toEmails(fields.coOwner).map(normalizeToEmail));
-  }
-  if (candidateLists.length) {
-    const missing = await findMissingEmployees(candidateLists);
-    if (missing.length) {
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+
+    const accepted = isAccepted(rows[0].evidenceStatus);
+    if (accepted && typeof fields.observation === "string") {
       return res
         .status(400)
-        .json({ error: `Unknown employee email(s): ${missing.join(", ")}` });
+        .json({ error: "Observation cannot be edited after acceptance." });
     }
-  }
 
-  const up = [];
-  const vals = [];
-  const set = (col, v) => {
-    up.push(`${col} = ?`);
-    vals.push(v);
-  };
-
-  const allowed = [
-    "fiscalYear",
-    "date",
-    "process",
-    "entityCovered",
-    "observation",
-    "riskLevel",
-    "recommendation",
-    "managementComment",
-    "personResponsible",
-    "approver",
-    "cxoResponsible",
-    "coOwner",
-    "timeline",
-    "currentStatus",
-    "reviewComments",
-    "risk",
-    "actionRequired",
-    "startMonth",
-    "endMonth",
-  ];
-  for (const k of allowed) if (k in fields) set(k, fields[k]);
-
-  if (!up.length) return res.json({ message: "No changes" });
-
-  await connection.execute(
-    `UPDATE dbo.AuditIssues SET ${up.join(
-      ", "
-    )}, updatedAt = GETDATE() WHERE id = ?`,
-    [...vals, id]
-  );
-
-  const [updated] = await connection.execute(
-    `SELECT * FROM dbo.AuditIssues WHERE id = ?`,
-    [id]
-  );
-
-  try {
-    if (actor && isAuditorEmail(actor)) {
-      const before = row; // pre-update row (already fetched at top via getIssueRow)
-      const after = updated[0]; // post-update row
-
-      const changed = [];
-      const fieldsToShow = [
-        "fiscalYear",
-        "date",
-        "process",
-        "entityCovered",
-        "observation",
-        "riskLevel",
-        "recommendation",
-        "managementComment",
-        "personResponsible",
-        "approver",
-        "cxoResponsible",
-        "coOwner",
-        "timeline",
-        "currentStatus",
-        "reviewComments",
-        "risk",
-        "actionRequired",
-        "startMonth",
-        "endMonth",
-      ];
-      fieldsToShow.forEach((k) => {
-        const a = String(before?.[k] ?? "");
-        const b = String(after?.[k] ?? "");
-        if (a !== b) changed.push(`<b>${k}</b>: “${a || "—"}” → “${b || "—"}”`);
-      });
-
-      if (changed.length) {
-        const to = getAuditorList();
-        const cc = uniqEmails(
-          after.personResponsible,
-          after.approver,
-          after.cxoResponsible
-        );
-        const subject = `${APP_NAME}, Issue Edited by Auditor (${after.serialNumber})`;
-        const html = emailTemplate({
-          title: `✏️ ${APP_NAME} — Issue Edited by Auditor`,
-          paragraphs: [
-            `<b>Issue:</b> ${buildCaption(after)}`,
-            `Edited by: ${actor}`,
-          ],
-          highlight: `<div style="text-align:left;">${changed.join(
-            "<br/>"
-          )}</div>`,
+    // ✅ EMP validation if any of these fields are being updated
+    const candidateLists = [];
+    if (typeof fields.personResponsible === "string") {
+      candidateLists.push(
+        ...toEmails(fields.personResponsible).map(normalizeToEmail)
+      );
+    }
+    if (typeof fields.approver === "string") {
+      candidateLists.push(...toEmails(fields.approver).map(normalizeToEmail));
+    }
+    if (typeof fields.cxoResponsible === "string") {
+      candidateLists.push(
+        ...toEmails(fields.cxoResponsible).map(normalizeToEmail)
+      );
+    }
+    if (typeof fields.coOwner === "string") {
+      candidateLists.push(...toEmails(fields.coOwner).map(normalizeToEmail));
+    }
+    if (candidateLists.length) {
+      const missing = await findMissingEmployees(candidateLists);
+      if (missing.length) {
+        return res.status(400).json({
+          error: `Unknown employee email(s): ${missing.join(", ")}`,
         });
-        await sendEmail(to, subject, html, cc);
       }
     }
-  } catch (e) {
-    console.warn("mail(auditor edit) failed:", e?.message || e);
-  }
 
-  res.json(updated[0]);
-});
+    /* ---------- NEW: handle annexure file uploads on edit ---------- */
+    let annexureUpdated = false;
+    let annexureList = [];
+    try {
+      annexureList = JSON.parse(row.annexure || "[]");
+      if (!Array.isArray(annexureList)) annexureList = [];
+    } catch {
+      annexureList = [];
+    }
+
+    const annexureFiles = (req.files || []).filter(
+      (f) => f.fieldname === "annexure"
+    );
+    if (annexureFiles.length) {
+      const nowIso = new Date().toISOString();
+      const newAnnexures = annexureFiles.map((file) => ({
+        name: file.originalname,
+        path: path.relative(__dirname, file.path),
+        size: file.size,
+        type: file.mimetype,
+        uploadedAt: nowIso,
+      }));
+      annexureList = [...annexureList, ...newAnnexures];
+      annexureUpdated = true;
+    }
+    /* --------------------------------------------------------------- */
+
+    const up = [];
+    const vals = [];
+    const set = (col, v) => {
+      up.push(`${col} = ?`);
+      vals.push(v);
+    };
+
+    const allowed = [
+      "fiscalYear",
+      "quarter",
+      "date",
+      "process",
+      "entityCovered",
+      "observation",
+      "riskLevel",
+      "recommendation",
+      "managementComment",
+      "personResponsible",
+      "approver",
+      "cxoResponsible",
+      "coOwner",
+      "timeline",
+      "currentStatus",
+      "reviewComments",
+      "risk",
+      "actionRequired",
+      "startMonth",
+      "endMonth",
+    ];
+    for (const k of allowed) if (k in fields) set(k, fields[k]);
+
+    // ⬅️ if we actually appended annexures, persist them
+    if (annexureUpdated) {
+      set("annexure", JSON.stringify(annexureList));
+    }
+
+    if (!up.length) return res.json({ message: "No changes" });
+
+    await connection.execute(
+      `UPDATE dbo.AuditIssues SET ${up.join(
+        ", "
+      )}, updatedAt = GETDATE() WHERE id = ?`,
+      [...vals, id]
+    );
+
+    const [updated] = await connection.execute(
+      `SELECT * FROM dbo.AuditIssues WHERE id = ?`,
+      [id]
+    );
+
+    try {
+      if (actor && (await isAuditorEmail(actor))) {
+        const before = row; // pre-update row (already fetched at top via getIssueRow)
+        const after = updated[0]; // post-update row
+
+        const changed = [];
+        const fieldsToShow = [
+          "fiscalYear",
+          "quarter",
+          "date",
+          "process",
+          "entityCovered",
+          "observation",
+          "riskLevel",
+          "recommendation",
+          "managementComment",
+          "personResponsible",
+          "approver",
+          "cxoResponsible",
+          "coOwner",
+          "timeline",
+          "currentStatus",
+          "reviewComments",
+          "risk",
+          "actionRequired",
+          "startMonth",
+          "endMonth",
+        ];
+        fieldsToShow.forEach((k) => {
+          const a = String(before?.[k] ?? "");
+          const b = String(after?.[k] ?? "");
+          if (a !== b)
+            changed.push(`<b>${k}</b>: “${a || "—"}” → “${b || "—"}”`);
+        });
+
+        if (changed.length) {
+          const cc = getAuditorList();
+          const to = uniqEmails(
+            after.personResponsible,
+            after.approver,
+            after.cxoResponsible
+          );
+          const subject = `${APP_NAME}, Issue Edited by Auditor (${after.serialNumber})`;
+          const html = emailTemplate({
+            title: `✏️ ${APP_NAME}: Issue Edited by Auditor`,
+            paragraphs: [
+              `<b>Issue:</b> ${buildCaption(after)}`,
+              `<b>Observation:</b> ${after.observation || "—"}`,
+              `Edited by: ${actor}`,
+              `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
+            ],
+            highlight: `<div style="text-align:left;">${changed.join(
+              "<br/>"
+            )}</div>`,
+          });
+          await sendEmail(to, subject, html, cc);
+        }
+      }
+    } catch (e) {
+      console.warn("mail(auditor edit) failed:", e?.message || e);
+    }
+
+    res.json(updated[0]);
+  }
+);
 
 // helpers required by PUT route
 async function getIssueRow(id) {
@@ -1665,7 +2692,7 @@ async function getIssueRow(id) {
   return rows[0] || null;
 }
 function isLocked(row) {
-  return String(row?.evidenceStatus || "") === "Accepted";
+  return isAccepted(row?.evidenceStatus);
 }
 function lockedRes(res) {
   return res
@@ -1747,9 +2774,10 @@ app.post("/api/audit-issues/:id/close", async (req, res) => {
     .trim();
   const actor = normalizeToEmail(actorRaw);
   if (!actor) return res.status(400).json({ error: "Missing actor" });
-  if (!isAuditorEmail(actor)) {
+  if (!(await isAuditorEmail(actor))) {
     return res.status(403).json({ error: "Only auditors can close issues." });
   }
+
   try {
     const connection = await auditPool.getConnection();
     await connection.execute(
@@ -1763,21 +2791,129 @@ app.post("/api/audit-issues/:id/close", async (req, res) => {
   }
 });
 
+// ======================= Export unique stakeholders (XLSX) =======================
+// GET /api/audit-issues/export-stakeholders
+// Outputs all UNIQUE emails from personResponsible / approver / cxoResponsible
+app.get("/api/audit-issues/export-stakeholders", async (req, res) => {
+  try {
+    const connection = await auditPool.getConnection();
+
+    const [rows] = await connection.execute(`
+      SELECT personResponsible, approver, cxoResponsible
+      FROM dbo.AuditIssues;
+    `);
+
+    // emailKey -> { Email, Roles: Set<string> }
+    const stakeholders = new Map();
+
+    const addRole = (rawVal, roleLabel) => {
+      const emails = toEmails(rawVal); // existing helper: handles arrays/JSON/";," strings
+      emails.forEach((e) => {
+        const em = normalizeToEmail(e); // existing helper: adds @premierenergies.com if missing
+        if (!em) return;
+        const key = em.toLowerCase();
+        let entry = stakeholders.get(key);
+        if (!entry) {
+          entry = { Email: em, Roles: new Set() };
+          stakeholders.set(key, entry);
+        }
+        entry.Roles.add(roleLabel);
+      });
+    };
+
+    for (const r of rows) {
+      addRole(r.personResponsible, "Person Responsible");
+      addRole(r.approver, "Approver");
+      addRole(r.cxoResponsible, "CXO");
+    }
+
+    const exportRows = Array.from(stakeholders.values())
+      .sort((a, b) => a.Email.localeCompare(b.Email))
+      .map((e) => ({
+        Email: e.Email,
+        Roles: Array.from(e.Roles).join(", "),
+      }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Stakeholders");
+
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    const filename = `Audit_Stakeholders_${new Date()
+      .toISOString()
+      .slice(0, 10)}.xlsx`;
+
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    res.type(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    return res.send(buf);
+  } catch (err) {
+    console.error("⛔ Export stakeholders error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to export unique stakeholders" });
+  }
+});
+
+
 /* --------------------------------- SPA fallthrough -------------------------- */
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, "../dist", "index.html"));
 });
-
 /* ------------------------------- Daily reminders ---------------------------- */
 const reminderSentOn = new Map(); // id -> 'YYYY-MM-DD' (resets on restart – OK for now)
+const overdueSentOn = new Map();
 
 async function runDailyReminders() {
   try {
     const connection = await auditPool.getConnection();
     // due between today and +3 days inclusive, and not Closed
     const [rows] = await connection.execute(`
-      SELECT id, serialNumber, process, entityCovered, timeline,
-             personResponsible, approver, cxoResponsible, currentStatus
+            SELECT id, serialNumber, process, entityCovered, observation, timeline,
+                   personResponsible, approver, cxoResponsible, currentStatus
+      FROM dbo.AuditIssues
+      WHERE timeline IS NOT NULL
+        AND DATEDIFF(DAY, CONVERT(date, GETDATE()), timeline) BETWEEN 0 AND 3
+    `);
+    // Logic to send reminders...
+  } catch (err) {
+    console.error("⛔ Daily reminder error:", err);
+  }
+}
+
+function startDailyReminderTimer() {
+  const now = new Date();
+  const targetTime = new Date(now);
+
+  // Set target time to 10:00 AM IST
+  targetTime.setUTCHours(4, 30, 0, 0); // 10:00 AM IST = 4:30 AM UTC
+
+  // If the target time has already passed today, schedule for tomorrow
+  if (now > targetTime) {
+    targetTime.setDate(targetTime.getDate() + 1);
+  }
+
+  const delay = targetTime - now; // Time until the next 10:00 AM IST
+
+  // Schedule the first execution
+  setTimeout(() => {
+    runDailyReminders(); // Run the reminders at 10:00 AM IST
+    setInterval(runDailyReminders, 24 * 60 * 60 * 1000); // Schedule subsequent executions every 24 hours
+  }, delay);
+}
+
+// Start the daily reminder timer
+startDailyReminderTimer();
+/* ------------------------------- Daily reminders ---------------------------- */
+
+async function runDailyReminders() {
+  try {
+    const connection = await auditPool.getConnection();
+    // due between today and +3 days inclusive, and not Closed
+    const [rows] = await connection.execute(`
+            SELECT id, serialNumber, process, entityCovered, observation, timeline,
+                   personResponsible, approver, cxoResponsible, currentStatus
       FROM dbo.AuditIssues
       WHERE timeline IS NOT NULL
         AND DATEDIFF(DAY, CONVERT(date, GETDATE()), timeline) BETWEEN 0 AND 3
@@ -1793,24 +2929,25 @@ async function runDailyReminders() {
         0,
         Math.ceil((new Date(r.timeline) - new Date()) / 86400000)
       );
-      const to = getAuditorList();
-      const cc = uniqEmails(r.personResponsible, r.approver, r.cxoResponsible);
+      const to = uniqEmails(r.personResponsible, r.approver, r.cxoResponsible);
 
       const subject = `${APP_NAME}, Reminder (${
         r.serialNumber
       } due in ${daysLeft} day${daysLeft === 1 ? "" : "s"})`;
       const html = emailTemplate({
-        title: `⏰ ${APP_NAME} — Due Soon`,
+        title: `⏰ ${APP_NAME}: Due Soon`,
         paragraphs: [
           `<b>Issue:</b> ${buildCaption(r)}`,
+          `<b>Observation:</b> ${r.observation || "—"}`,
           `<b>Due Date:</b> ${r.timeline || "—"}`,
           `<b>Current Status:</b> ${r.currentStatus || "To Be Received"}`,
+          `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
         ],
         highlight: `Due in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`,
       });
 
       try {
-        await sendEmail(to, subject, html, cc);
+        await sendEmail(to, subject, html);
       } catch (e) {
         console.warn("mail(reminder) failed:", e?.message || e);
       }
@@ -1823,8 +2960,188 @@ async function runDailyReminders() {
 
 function startDailyReminderTimer() {
   // run now, then every 24h
-  runDailyReminders();
+  if (auditPool) {
+    runDailyReminders();
+    runDailyOverdues();
+  }
   setInterval(runDailyReminders, 24 * 60 * 60 * 1000);
+  setInterval(runDailyOverdues, 24 * 60 * 60 * 1000);
+}
+
+async function runDailyOverdues() {
+  try {
+    const connection = await auditPool.getConnection();
+
+    // Only overdue, not closed, and NOT Accepted
+    const [rows] = await connection.execute(`
+      SELECT id, serialNumber, process, entityCovered, observation, timeline,
+             personResponsible, approver, cxoResponsible, currentStatus, evidenceStatus
+      FROM dbo.AuditIssues
+      WHERE timeline IS NOT NULL
+        AND CONVERT(date, timeline) < CONVERT(date, GETDATE())
+        AND (currentStatus IS NULL OR currentStatus <> 'Closed')
+        AND (evidenceStatus IS NULL OR evidenceStatus <> 'Accepted')
+      ORDER BY timeline ASC
+    `);
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayDateOnly = new Date(todayStr);
+
+    // Skip issues we already sent an overdue mail for today
+    const pendingRows = rows.filter(
+      (r) => overdueSentOn.get(r.id) !== todayStr
+    );
+    if (!pendingRows.length) {
+      return;
+    }
+
+    const daysOver = (timeline) => {
+      if (!timeline) return 0;
+      const due = new Date(new Date(timeline).toISOString().slice(0, 10));
+      const diff = Math.floor((todayDateOnly - due) / 86400000);
+      return diff <= 0 ? 1 : diff; // at least 1 day overdue if already past
+    };
+
+    const dateStr = (d) => {
+      if (!d) return "—";
+      try {
+        const dt = new Date(d);
+        return isNaN(dt) ? "—" : dt.toISOString().slice(0, 10);
+      } catch {
+        return "—";
+      }
+    };
+
+    // Group overdue issues per user (PR / Approver / CXO)
+    const recipients = new Map(); // email -> { email, items: [] }
+
+    const addFor = (rawEmail, row, role) => {
+      const em = normalizeToEmail(rawEmail);
+      if (!em) return;
+
+      let bucket = recipients.get(em);
+      if (!bucket) {
+        bucket = { email: em, items: [] };
+        recipients.set(em, bucket);
+      }
+
+      // Same issue can appear for multiple roles for same user
+      bucket.items.push({
+        id: row.id,
+        serialNumber: row.serialNumber,
+        process: row.process,
+        entityCovered: row.entityCovered,
+        observation: row.observation,
+        timeline: row.timeline,
+        currentStatus: row.currentStatus,
+        role,
+        daysOver: daysOver(row.timeline),
+      });
+    };
+
+    for (const r of pendingRows) {
+      // Primary: PR, but also notify Approver/CXO (one consolidated mail each)
+      toEmails(r.personResponsible).forEach((e) =>
+        addFor(e, r, "Person Responsible")
+      );
+      toEmails(r.approver).forEach((e) => addFor(e, r, "Approver"));
+      toEmails(r.cxoResponsible).forEach((e) => addFor(e, r, "CXO"));
+
+      // Mark this issue as "handled" for today (prevents duplicates if function re-runs)
+      overdueSentOn.set(r.id, todayStr);
+    }
+
+    if (!recipients.size) {
+      return;
+    }
+
+    const makeTable = (items) => {
+      const sorted = items.slice().sort((a, b) => {
+        const ta = a.timeline ? new Date(a.timeline).getTime() : Infinity;
+        const tb = b.timeline ? new Date(b.timeline).getTime() : Infinity;
+        return ta - tb || (a.serialNumber || 0) - (b.serialNumber || 0);
+      });
+
+      const rowsHtml = sorted
+        .map((it, idx) => {
+          const zebra = idx % 2 ? "background:#fafbff;" : "";
+          return `
+          <tr style="${zebra}">
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;"><b>${
+              it.serialNumber || ""
+            }</b></td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${
+              it.process || ""
+            } / ${it.entityCovered || ""}</td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${
+              it.role
+            }</td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">
+              ${dateStr(it.timeline)}
+              <div style="color:#b91c1c;font-size:12px;">Overdue by ${
+                it.daysOver
+              } day${it.daysOver === 1 ? "" : "s"}</div>
+            </td>
+            <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;">${
+              it.currentStatus || "To Be Received"
+            }</td>
+          </tr>`;
+        })
+        .join("");
+
+      return `
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e6e8eb;border-radius:8px;overflow:hidden;">
+        <thead>
+          <tr style="background:#f4f6ff;">
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Serial #</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Process / Entity</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Your Role</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Due / Pending</th>
+            <th style="text-align:left;padding:10px 12px;border-bottom:1px solid #e6e8eb;">Status</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>`;
+    };
+
+    // Send one consolidated email per user (no auditors in CC)
+    for (const [, rec] of recipients) {
+      const items = rec.items;
+      if (!items.length) continue;
+
+      const count = items.length;
+      const table = makeTable(items);
+
+      const subject = `${APP_NAME}, Overdue Actions — ${count} observation${
+        count === 1 ? "" : "s"
+      }`;
+      const html = emailTemplate({
+        title: `⛔ ${APP_NAME}: Overdue Observations`,
+        paragraphs: [
+          `You have <b>${count}</b> overdue audit observation${
+            count === 1 ? "" : "s"
+          } where you are marked as <b>Person Responsible</b>, <b>Approver</b> or <b>CXO</b>.`,
+          `Please review the details below and update the status / upload evidence in the portal.`,
+          table,
+        ],
+        highlight: `<a href="https://audit.premierenergies.com" style="text-decoration:none;display:inline-block;padding:10px 14px;border:1px solid #b91c1c;border-radius:6px;font-weight:600;">Open CAM Portal</a>`,
+        footerNote: `This email consolidates all your overdue observations into a single daily reminder. Accepted points are excluded automatically.`,
+      });
+
+      try {
+        // ✅ No auditors in CC anymore
+        await sendEmail(rec.email, subject, html, []);
+      } catch (e) {
+        console.warn(
+          "mail(overdue consolidated) failed:",
+          rec.email,
+          e?.message || e
+        );
+      }
+    }
+  } catch (e) {
+    console.warn("runDailyOverdues error:", e?.message || e);
+  }
 }
 
 /* --------------------------------- Servers --------------------------------- */

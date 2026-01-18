@@ -11,6 +11,8 @@ const https = require("https");
 const http = require("http");
 const dotenv = require("dotenv");
 dotenv.config();
+const EMAILS_DISABLED =
+  String(process.env.AUDIT_DISABLE_EMAILS || "").toLowerCase() === "true";
 
 let auditPool; // auditms DB (AuditIssues, reports, etc.)
 let spotPool; // SPOT DB (EMP, OTP storage)
@@ -143,6 +145,16 @@ async function sendEmail(toEmail, subject, htmlContent, ccEmail = []) {
       emailAddress: { address: addr },
     })),
   };
+
+  // 🔇 SHORT-CIRCUIT WHEN EMAILS DISABLED
+  if (EMAILS_DISABLED) {
+    console.log("[EMAIL DISABLED] Would send email:", {
+      to: normalizedTo,
+      cc: normalizedCc,
+      subject,
+    });
+    return; // pretend success, all callers continue as normal
+  }
 
   try {
     await graphClient
@@ -795,6 +807,7 @@ app.delete("/api/auditors/:id", async (req, res) => {
 /* ======================= OTP AUTH (SPOT: EMP + OTPs) ======================= */
 
 // Request OTP (EMP-validated, OTP stored in dbo.AuditPortalLogin)
+// Request OTP (EMP-validated, OTP stored in dbo.AuditPortalLogin)
 app.post("/api/send-otp", async (req, res) => {
   try {
     const rawEmail = (req.body.email || "").trim();
@@ -836,7 +849,8 @@ app.post("/api/send-otp", async (req, res) => {
       `);
 
     const subject = `${APP_NAME}, OTP`;
-    const minutesValid = 5; // keep your current 5-minute policy
+    const minutesValid = 5;
+
     const html = emailTemplate({
       title: `🔐 ${APP_NAME}, OTP`,
       paragraphs: [
@@ -847,6 +861,14 @@ app.post("/api/send-otp", async (req, res) => {
       highlight: `<span style="font-size:22px;letter-spacing:3px;">${otp}</span>`,
       footerNote: `This code is valid for ${minutesValid} minutes.`,
     });
+
+    // 🔑 TEST MODE: if emails are disabled, just return the OTP in response
+    if (EMAILS_DISABLED) {
+      console.warn("[EMAIL DISABLED] OTP generated:", otp);
+      return res
+        .status(200)
+        .json({ message: "OTP generated (email disabled)", devOtp: otp });
+    }
 
     try {
       await sendEmail(fullEmail, subject, html);
@@ -1028,7 +1050,7 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
         cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
         reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
     `;
 
     const fiscalYear = body.fiscalYear || "";
@@ -1515,15 +1537,16 @@ app.post(
       }
 
       const connection = await auditPool.getConnection();
+      // ✅ FIXED version in /api/audit-issues/upload
       const insertQuery = `
-      INSERT INTO dbo.AuditIssues (
-        id, fiscalYear, quarter, date, process, entityCovered, observation, riskLevel,
-        recommendation, managementComment, personResponsible, approver,
-        cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
-        reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
-    `;
+  INSERT INTO dbo.AuditIssues (
+    id, fiscalYear, quarter, date, process, entityCovered, observation, riskLevel,
+    recommendation, managementComment, personResponsible, approver,
+    cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
+    reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
+`;
 
       let successCount = 0;
       let errorCount = 0;
@@ -2855,7 +2878,6 @@ app.get("/api/audit-issues/export-stakeholders", async (req, res) => {
       .json({ error: "Failed to export unique stakeholders" });
   }
 });
-
 
 /* --------------------------------- SPA fallthrough -------------------------- */
 app.get(/.*/, (req, res) => {

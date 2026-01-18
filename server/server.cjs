@@ -298,6 +298,52 @@ async function initDb() {
     await auditPool.request().query(tableCheckQuery);
     console.log("✅ AuditIssues table is ready (AUDIT DB)");
 
+    // CMD-F ANCHOR: atrMode migration
+    // FIX: split into separate batches so SQL Server doesn't compile UPDATE before column exists
+
+    // 1) Ensure column exists
+    await auditPool.request().query(`
+  IF COL_LENGTH('dbo.AuditIssues','atrMode') IS NULL
+  BEGIN
+    ALTER TABLE dbo.AuditIssues ADD atrMode VARCHAR(10) NULL;
+  END;
+`);
+
+    // 2) Ensure DEFAULT constraint exists (robust: do not rely on constraint name)
+    await auditPool.request().query(`
+  IF COL_LENGTH('dbo.AuditIssues','atrMode') IS NOT NULL
+     AND NOT EXISTS (
+        SELECT 1
+        FROM sys.default_constraints dc
+        JOIN sys.columns c
+          ON c.default_object_id = dc.object_id
+        JOIN sys.tables t
+          ON t.object_id = c.object_id
+        JOIN sys.schemas s
+          ON s.schema_id = t.schema_id
+        WHERE s.name = 'dbo'
+          AND t.name = 'AuditIssues'
+          AND c.name = 'atrMode'
+     )
+  BEGIN
+    ALTER TABLE dbo.AuditIssues
+      ADD CONSTRAINT DF_AuditIssues_atrMode DEFAULT 'Manual' FOR atrMode;
+  END;
+`);
+
+    // 3) Backfill existing rows
+    await auditPool.request().query(`
+  IF COL_LENGTH('dbo.AuditIssues','atrMode') IS NOT NULL
+  BEGIN
+    UPDATE dbo.AuditIssues
+      SET atrMode = 'Manual'
+    WHERE atrMode IS NULL;
+  END;
+`);
+
+    console.log("✅ atrMode column ensured in AuditIssues table (AUDIT DB)");
+    // CMD-F ANCHOR: atrMode migration
+
     // ⬇️ Add this after table creation checks
     await auditPool.request().query(`
   IF COL_LENGTH('dbo.AuditIssues','quarter') IS NULL
@@ -353,84 +399,85 @@ async function initDb() {
     await spotPool.request().query(loginTableCheck);
     console.log(`✅ ${OTP_TABLE} table present (SPOT DB)`);
     // ---- One-off seed: ensure Vijay exists in dbo.EMP (SPOT DB) ----
-try {
-  const user = {
-    EmpID: "PEPPL1422",
-    EmpEmail: "vijayendra.kr@premierenergies.com",
-    EmpName: "K R Vijayendra Rao",
-    Dept: "Insurance",
-    SubDept: "Insurance",
-    EmpLocation: "Corporate Office",
-    Designation: "Assistant General Manager",
-  };
+    try {
+      const user = {
+        EmpID: "PEPPL1422",
+        EmpEmail: "vijayendra.kr@premierenergies.com",
+        EmpName: "K R Vijayendra Rao",
+        Dept: "Insurance",
+        SubDept: "Insurance",
+        EmpLocation: "Corporate Office",
+        Designation: "Assistant General Manager",
+      };
 
-  // detect optional columns safely
-  const colsRs = await spotPool.request().query(`
+      // detect optional columns safely
+      const colsRs = await spotPool.request().query(`
     SELECT 
       COL_LENGTH('dbo.EMP','ActiveFlag')  AS HasActiveFlag,
       COL_LENGTH('dbo.EMP','CreatedAt')   AS HasCreatedAt,
       COL_LENGTH('dbo.EMP','UpdatedAt')   AS HasUpdatedAt
   `);
 
-  const flags = colsRs.recordset?.[0] || {};
-  const hasActiveFlag = flags.HasActiveFlag != null;
-  const hasCreatedAt = flags.HasCreatedAt != null;
-  const hasUpdatedAt = flags.HasUpdatedAt != null;
+      const flags = colsRs.recordset?.[0] || {};
+      const hasActiveFlag = flags.HasActiveFlag != null;
+      const hasCreatedAt = flags.HasCreatedAt != null;
+      const hasUpdatedAt = flags.HasUpdatedAt != null;
 
-  const reqq = spotPool.request()
-    .input("EmpID", sql.NVarChar(50), user.EmpID)
-    .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
-    .input("EmpName", sql.NVarChar(255), user.EmpName)
-    .input("Dept", sql.NVarChar(255), user.Dept)
-    .input("SubDept", sql.NVarChar(255), user.SubDept)
-    .input("EmpLocation", sql.NVarChar(255), user.EmpLocation)
-    .input("Designation", sql.NVarChar(255), user.Designation);
+      const reqq = spotPool
+        .request()
+        .input("EmpID", sql.NVarChar(50), user.EmpID)
+        .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
+        .input("EmpName", sql.NVarChar(255), user.EmpName)
+        .input("Dept", sql.NVarChar(255), user.Dept)
+        .input("SubDept", sql.NVarChar(255), user.SubDept)
+        .input("EmpLocation", sql.NVarChar(255), user.EmpLocation)
+        .input("Designation", sql.NVarChar(255), user.Designation);
 
-  if (hasActiveFlag) reqq.input("ActiveFlag", sql.Bit, 1);
+      if (hasActiveFlag) reqq.input("ActiveFlag", sql.Bit, 1);
 
-  const setParts = [
-    "EmpEmail = @EmpEmail",
-    "EmpName = @EmpName",
-    "Dept = @Dept",
-    "SubDept = @SubDept",
-    "EmpLocation = @EmpLocation",
-    "Designation = @Designation",
-  ];
-  if (hasActiveFlag) setParts.push("ActiveFlag = @ActiveFlag");
-  if (hasUpdatedAt) setParts.push("UpdatedAt = GETDATE()");
+      const setParts = [
+        "EmpEmail = @EmpEmail",
+        "EmpName = @EmpName",
+        "Dept = @Dept",
+        "SubDept = @SubDept",
+        "EmpLocation = @EmpLocation",
+        "Designation = @Designation",
+      ];
+      if (hasActiveFlag) setParts.push("ActiveFlag = @ActiveFlag");
+      if (hasUpdatedAt) setParts.push("UpdatedAt = GETDATE()");
 
-  const insertCols = [
-    "EmpID",
-    "EmpEmail",
-    "EmpName",
-    "Dept",
-    "SubDept",
-    "EmpLocation",
-    "Designation",
-  ];
-  const insertVals = [
-    "@EmpID",
-    "@EmpEmail",
-    "@EmpName",
-    "@Dept",
-    "@SubDept",
-    "@EmpLocation",
-    "@Designation",
-  ];
-  if (hasActiveFlag) {
-    insertCols.push("ActiveFlag");
-    insertVals.push("@ActiveFlag");
-  }
-  if (hasCreatedAt) {
-    insertCols.push("CreatedAt");
-    insertVals.push("GETDATE()");
-  }
-  if (hasUpdatedAt) {
-    insertCols.push("UpdatedAt");
-    insertVals.push("GETDATE()");
-  }
+      const insertCols = [
+        "EmpID",
+        "EmpEmail",
+        "EmpName",
+        "Dept",
+        "SubDept",
+        "EmpLocation",
+        "Designation",
+      ];
+      const insertVals = [
+        "@EmpID",
+        "@EmpEmail",
+        "@EmpName",
+        "@Dept",
+        "@SubDept",
+        "@EmpLocation",
+        "@Designation",
+      ];
+      if (hasActiveFlag) {
+        insertCols.push("ActiveFlag");
+        insertVals.push("@ActiveFlag");
+      }
+      if (hasCreatedAt) {
+        insertCols.push("CreatedAt");
+        insertVals.push("GETDATE()");
+      }
+      if (hasUpdatedAt) {
+        insertCols.push("UpdatedAt");
+        insertVals.push("GETDATE()");
+      }
 
-  await reqq.query(`
+      await reqq.query(`
     IF EXISTS (SELECT 1 FROM dbo.EMP WHERE EmpID = @EmpID)
     BEGIN
       UPDATE dbo.EMP
@@ -444,12 +491,11 @@ try {
     END;
   `);
 
-  console.log("✅ Seeded/ensured Vijay in dbo.EMP");
-} catch (e) {
-  console.warn("⚠️ EMP seed (Vijay) failed:", e?.message || e);
-}
-// ---------------------------------------------------------------
-
+      console.log("✅ Seeded/ensured Vijay in dbo.EMP");
+    } catch (e) {
+      console.warn("⚠️ EMP seed (Vijay) failed:", e?.message || e);
+    }
+    // ---------------------------------------------------------------
   } catch (err) {
     console.error("⛔ Failed to initialize database:", err);
     process.exit(1);
@@ -558,21 +604,27 @@ const normalizeToEmail = (raw) => {
 /* ======================= DIGI SSO (internal employees) ======================= */
 
 // Treat emails with no "@" as internal (because normalizeToEmail() appends @premierenergies.com)
-const INTERNAL_DOMAIN = (process.env.INTERNAL_DOMAIN || "@premierenergies.com").toLowerCase();
+const INTERNAL_DOMAIN = (
+  process.env.INTERNAL_DOMAIN || "@premierenergies.com"
+).toLowerCase();
 
 const isInternalEmployeeEmail = (email) => {
-  const e = String(email || "").trim().toLowerCase();
+  const e = String(email || "")
+    .trim()
+    .toLowerCase();
   if (!e) return false;
   return !e.includes("@") || e.endsWith(INTERNAL_DOMAIN);
 };
 
 // Where to send internal users for login
 // Example: https://digi.premierenergies.com/login
-const DIGI_LOGIN_URL = process.env.DIGI_LOGIN_URL || "https://digi.premierenergies.com/login";
+const DIGI_LOGIN_URL =
+  process.env.DIGI_LOGIN_URL || "https://digi.premierenergies.com/login";
 
 // Where Digi should redirect back after login
 // MUST be your public URL (not localhost)
-const CAM_PUBLIC_ORIGIN = process.env.CAM_PUBLIC_ORIGIN || "https://audit.premierenergies.com";
+const CAM_PUBLIC_ORIGIN =
+  process.env.CAM_PUBLIC_ORIGIN || "https://audit.premierenergies.com";
 
 // Optional: path in CAM to land after Digi login
 const CAM_RETURN_PATH = process.env.CAM_RETURN_PATH || "/"; // could be "/login" too
@@ -582,7 +634,9 @@ function buildDigiRedirectUrl(prefillEmail) {
   const base = String(DIGI_LOGIN_URL || "").replace(/\/+$/, "");
   const email = String(prefillEmail || "").trim();
   // Add email so Digi can prefill if it supports it; harmless if ignored
-  return `${base}?redirect=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`;
+  return `${base}?redirect=${encodeURIComponent(
+    next
+  )}&email=${encodeURIComponent(email)}`;
 }
 
 // How CAM reads Digi’s SSO token (cookie) after login.
@@ -627,7 +681,11 @@ function extractEmailFromSsoPayload(payload) {
     payload?.unique_name,
     payload?.sub,
   ]
-    .map((x) => String(x || "").trim().toLowerCase())
+    .map((x) =>
+      String(x || "")
+        .trim()
+        .toLowerCase()
+    )
     .find(Boolean);
 
   return cand || "";
@@ -667,6 +725,7 @@ const STATIC_AUDITORS = [
   "santosh.kumar@protivitiglobal.in",
   "borra.prasanna@protivitiglobal.in",
   "aman.shah@protivitiglobal.in",
+  "aarnav.singh@premierenergies.com",
 ];
 
 // ✅ Special viewer who should see ALL issues in MyDashboard
@@ -766,8 +825,9 @@ const EMP_SEED_TOKEN = process.env.EMP_SEED_TOKEN || ""; // set in .env
 app.post("/api/emp/seed-vijayendra", async (req, res) => {
   try {
     // simple protection (so this isn't publicly usable)
-    const token =
-      String(req.headers["x-seed-token"] || req.query.token || "").trim();
+    const token = String(
+      req.headers["x-seed-token"] || req.query.token || ""
+    ).trim();
 
     if (!EMP_SEED_TOKEN || token !== EMP_SEED_TOKEN) {
       return res.status(403).json({ error: "Forbidden" });
@@ -800,7 +860,8 @@ app.post("/api/emp/seed-vijayendra", async (req, res) => {
     const hasCreatedAt = flags.HasCreatedAt != null;
     const hasUpdatedAt = flags.HasUpdatedAt != null;
 
-    const reqq = spotPool.request()
+    const reqq = spotPool
+      .request()
       .input("EmpID", sql.NVarChar(50), user.EmpID)
       .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
       .input("EmpName", sql.NVarChar(255), user.EmpName)
@@ -887,12 +948,12 @@ app.post("/api/emp/seed-vijayendra", async (req, res) => {
 
 // CMD-F ANCHOR: EMP seed endpoint
 
-
 async function seedVijayendraHandler(req, res) {
   try {
     // simple protection (so this isn't publicly usable)
-    const token =
-      String(req.headers["x-seed-token"] || req.query.token || "").trim();
+    const token = String(
+      req.headers["x-seed-token"] || req.query.token || ""
+    ).trim();
 
     if (!EMP_SEED_TOKEN || token !== EMP_SEED_TOKEN) {
       return res.status(403).json({ error: "Forbidden" });
@@ -924,7 +985,8 @@ async function seedVijayendraHandler(req, res) {
     const hasCreatedAt = flags.HasCreatedAt != null;
     const hasUpdatedAt = flags.HasUpdatedAt != null;
 
-    const reqq = spotPool.request()
+    const reqq = spotPool
+      .request()
       .input("EmpID", sql.NVarChar(50), user.EmpID)
       .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
       .input("EmpName", sql.NVarChar(255), user.EmpName)
@@ -1006,7 +1068,6 @@ async function seedVijayendraHandler(req, res) {
     return res.status(500).json({ error: "Failed to seed EMP user" });
   }
 }
-
 
 /* ---------------------------- Unlock (Accepted → open) ---------------------------- */
 app.post("/api/audit-issues/:id/unlock", async (req, res) => {
@@ -1245,8 +1306,7 @@ app.post("/api/sso/login", async (req, res) => {
     try {
       const empQ = await spotPool
         .request()
-        .input("em", sql.NVarChar(255), email)
-        .query(`
+        .input("em", sql.NVarChar(255), email).query(`
           SELECT TOP 1 EmpID, EmpName
           FROM dbo.EMP
           WHERE LOWER(EmpEmail) = LOWER(@em) AND ActiveFlag = 1
@@ -1280,14 +1340,17 @@ app.post("/api/send-otp", async (req, res) => {
   try {
     const rawEmail = (req.body.email || "").trim();
     const fullEmail = normalizeToEmail(rawEmail);
-// If internal employee -> force Digi SSO
-if (isInternalEmployeeEmail(rawEmail) || fullEmail.endsWith(INTERNAL_DOMAIN)) {
-  return res.status(409).json({
-    message: "Internal users must login via Digi SSO.",
-    ssoRequired: true,
-    redirectUrl: buildDigiRedirectUrl(fullEmail),
-  });
-}
+    // If internal employee -> force Digi SSO
+    if (
+      isInternalEmployeeEmail(rawEmail) ||
+      fullEmail.endsWith(INTERNAL_DOMAIN)
+    ) {
+      return res.status(409).json({
+        message: "Internal users must login via Digi SSO.",
+        ssoRequired: true,
+        redirectUrl: buildDigiRedirectUrl(fullEmail),
+      });
+    }
 
     const empQ = await spotPool
       .request()
@@ -1370,7 +1433,7 @@ app.post("/api/verify-otp", async (req, res) => {
         redirectUrl: buildDigiRedirectUrl(fullEmail),
       });
     }
-    
+
     const otp = (req.body.otp || "").trim();
 
     const rs = await spotPool
@@ -3226,6 +3289,364 @@ function lockedRes(res) {
     .status(423)
     .json({ error: "Issue is locked (Accepted). Viewing only." });
 }
+
+// CMD-F ANCHOR: reports-summary-api
+
+function _dateOnly(val) {
+  if (!val) return null;
+  const d = new Date(String(val).slice(0, 10));
+  return isNaN(d.getTime()) ? null : d;
+}
+function _todayDateOnly() {
+  return new Date(new Date().toISOString().slice(0, 10));
+}
+function _normRisk(r) {
+  const s = String(r || "")
+    .trim()
+    .toLowerCase();
+  if (s.includes("high")) return "high";
+  if (s.includes("low")) return "low";
+  return "medium";
+}
+function _normAtrMode(m) {
+  const s = String(m || "")
+    .trim()
+    .toLowerCase();
+  return s === "system" ? "System" : "Manual";
+}
+function _fallbackNameFromEmail(emailOrLabel) {
+  const raw = String(emailOrLabel || "Unassigned");
+  if (!raw.includes("@")) return raw;
+  const base = raw.split("@")[0].replace(/[._-]+/g, " ");
+  return base.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function _empNamesByEmail(emails) {
+  const list = Array.from(
+    new Set((emails || []).map((e) => String(e || "").trim()).filter(Boolean))
+  );
+  if (!list.length) return new Map();
+
+  // If SPOT/EMP is unavailable for any reason, fall back to email-derived names.
+  if (!spotPool) return new Map();
+
+  try {
+    const req = spotPool.request();
+    const clauses = [];
+    list.forEach((e, i) => {
+      req.input(`e${i}`, sql.NVarChar(255), e);
+      clauses.push(`LOWER(EmpEmail) = LOWER(@e${i})`);
+    });
+
+    const rs = await req.query(`
+      SELECT LOWER(EmpEmail) AS email, EmpName
+      FROM dbo.EMP
+      WHERE ActiveFlag = 1 AND (${clauses.join(" OR ")})
+    `);
+
+    const map = new Map();
+    for (const r of rs.recordset || []) {
+      map.set(
+        String(r.email || "").toLowerCase(),
+        String(r.EmpName || "").trim()
+      );
+    }
+    return map;
+  } catch (e) {
+    console.warn("EMP lookup failed (reports):", e?.message || e);
+    return new Map();
+  }
+}
+
+// Same "all-scope" guard pattern you use elsewhere (global vs process-scoped auditors)
+async function _filterIssuesForAuditorAllScope(issues, viewerEmail) {
+  const viewer = String(viewerEmail || "").toLowerCase();
+  if (!viewer) return [];
+
+  // Allow global auditors to see everything
+  const global = await isGlobalAuditor(viewer);
+  if (global) return issues;
+
+  // Process-scoped auditor: only allowed processes
+  const dyn = await listAuditorsFromDb();
+  const me = dyn.find((r) => r.email === viewer);
+  if (!me) return []; // caller should treat this as forbidden
+
+  const allowed = new Set(
+    (me.processes || []).map((p) => String(p || "").toLowerCase())
+  );
+  return issues.filter((r) => {
+    const proc = String(r.process || "").toLowerCase();
+    return allowed.has("*") || allowed.has("all") || allowed.has(proc);
+  });
+}
+
+function _emptyActionTakenRow() {
+  const risk = { high: 0, medium: 0, low: 0, total: 0 };
+  return {
+    total: { ...risk },
+    closed: { ...risk },
+    open: { ...risk },
+    ageing: {
+      notOverdue: 0,
+      d0_90: 0,
+      d91_180: 0,
+      d181_270: 0,
+      d271_360: 0,
+      d360plus: 0,
+      total: 0,
+    },
+  };
+}
+
+app.get("/api/reports/action-taken-status", async (req, res) => {
+  try {
+    const viewer = normalizeToEmail(String(req.query.viewer || ""));
+    if (!viewer) return res.status(400).json({ error: "viewer required" });
+
+    if (!(await isAuditorEmail(viewer))) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const fiscalYear = String(req.query.fiscalYear || "").trim();
+    const quarter = String(req.query.quarter || "")
+      .trim()
+      .toUpperCase();
+
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(`
+      SELECT process, cxoResponsible, currentStatus, riskLevel, timeline
+      FROM dbo.AuditIssues
+    `);
+
+    let issues = rows || [];
+
+    // Optional filters (safe/minimal)
+    if (fiscalYear)
+      issues = issues.filter((r) => String(r.fiscalYear || "") === fiscalYear);
+    if (quarter && ["Q1", "Q2", "Q3", "Q4"].includes(quarter)) {
+      issues = issues.filter(
+        (r) => String(r.quarter || "").toUpperCase() === quarter
+      );
+    }
+
+    issues = await _filterIssuesForAuditorAllScope(issues, viewer);
+    if (!issues.length) {
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        rows: [],
+        totals: _emptyActionTakenRow(),
+      });
+    }
+
+    const today = _todayDateOnly();
+    const msDay = 86400000;
+
+    // Determine primary CXO (to match your screenshot layout: one CXO per issue)
+    const cxoEmails = issues
+      .map((r) => toEmails(r.cxoResponsible)[0] || "Unassigned")
+      .map((e) => normalizeToEmail(e) || e);
+
+    const nameMap = await _empNamesByEmail(cxoEmails);
+
+    const byCxo = new Map();
+    const totals = _emptyActionTakenRow();
+
+    for (const r of issues) {
+      const primary = toEmails(r.cxoResponsible)[0] || "Unassigned";
+      const cxoEmail = normalizeToEmail(primary) || primary;
+      const cxoKey = String(cxoEmail || "Unassigned").toLowerCase();
+
+      const cxoName =
+        nameMap.get(cxoKey) || _fallbackNameFromEmail(cxoEmail || "Unassigned");
+
+      if (!byCxo.has(cxoKey)) {
+        byCxo.set(cxoKey, { cxoKey, cxoName, ..._emptyActionTakenRow() });
+      }
+      const bucket = byCxo.get(cxoKey);
+
+      const risk = _normRisk(r.riskLevel);
+      const isClosed =
+        String(r.currentStatus || "")
+          .trim()
+          .toLowerCase() === "closed";
+
+      // total
+      bucket.total[risk]++;
+      bucket.total.total++;
+      totals.total[risk]++;
+      totals.total.total++;
+
+      if (isClosed) {
+        bucket.closed[risk]++;
+        bucket.closed.total++;
+        totals.closed[risk]++;
+        totals.closed.total++;
+      } else {
+        bucket.open[risk]++;
+        bucket.open.total++;
+        totals.open[risk]++;
+        totals.open.total++;
+
+        // ageing on OPEN only
+        const due = _dateOnly(r.timeline);
+        let overdueDays = 0;
+        if (due) {
+          overdueDays = Math.floor((today.getTime() - due.getTime()) / msDay);
+          if (overdueDays < 0) overdueDays = 0;
+        } else {
+          overdueDays = 0; // treat null timeline as "Not overdue" like screenshot usually implies
+        }
+
+        if (overdueDays === 0) bucket.ageing.notOverdue++;
+        else if (overdueDays <= 90) bucket.ageing.d0_90++;
+        else if (overdueDays <= 180) bucket.ageing.d91_180++;
+        else if (overdueDays <= 270) bucket.ageing.d181_270++;
+        else if (overdueDays <= 360) bucket.ageing.d271_360++;
+        else bucket.ageing.d360plus++;
+
+        bucket.ageing.total++;
+        // totals ageing
+        if (overdueDays === 0) totals.ageing.notOverdue++;
+        else if (overdueDays <= 90) totals.ageing.d0_90++;
+        else if (overdueDays <= 180) totals.ageing.d91_180++;
+        else if (overdueDays <= 270) totals.ageing.d181_270++;
+        else if (overdueDays <= 360) totals.ageing.d271_360++;
+        else totals.ageing.d360plus++;
+        totals.ageing.total++;
+      }
+    }
+
+    const outRows = Array.from(byCxo.values()).sort((a, b) =>
+      String(a.cxoName || "").localeCompare(String(b.cxoName || ""))
+    );
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      rows: outRows,
+      totals,
+    });
+  } catch (e) {
+    console.error("reports/action-taken-status error:", e);
+    return res.status(500).json({ error: "Failed to generate report" });
+  }
+});
+
+function _emptyAtrRow() {
+  return {
+    pending: { manual: 0, system: 0, total: 0 },
+    expected: { due: 0, d0_30: 0, d31_60: 0, d61_90: 0, d91plus: 0 },
+  };
+}
+
+app.get("/api/reports/internal-audit-atr-status", async (req, res) => {
+  try {
+    const viewer = normalizeToEmail(String(req.query.viewer || ""));
+    if (!viewer) return res.status(400).json({ error: "viewer required" });
+
+    if (!(await isAuditorEmail(viewer))) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const connection = await auditPool.getConnection();
+    const [rows] = await connection.execute(`
+      SELECT process, cxoResponsible, currentStatus, timeline, atrMode
+      FROM dbo.AuditIssues
+    `);
+
+    let issues = rows || [];
+    issues = await _filterIssuesForAuditorAllScope(issues, viewer);
+
+    const today = _todayDateOnly();
+    const msDay = 86400000;
+
+    const cxoEmails = issues
+      .map((r) => toEmails(r.cxoResponsible)[0] || "Unassigned")
+      .map((e) => normalizeToEmail(e) || e);
+
+    const nameMap = await _empNamesByEmail(cxoEmails);
+
+    const byCxo = new Map();
+    const totals = _emptyAtrRow();
+
+    for (const r of issues) {
+      const isClosed =
+        String(r.currentStatus || "")
+          .trim()
+          .toLowerCase() === "closed";
+      if (isClosed) continue; // pending action points = OPEN only (matches screenshot)
+
+      const primary = toEmails(r.cxoResponsible)[0] || "Unassigned";
+      const cxoEmail = normalizeToEmail(primary) || primary;
+      const cxoKey = String(cxoEmail || "Unassigned").toLowerCase();
+      const cxoName =
+        nameMap.get(cxoKey) || _fallbackNameFromEmail(cxoEmail || "Unassigned");
+
+      if (!byCxo.has(cxoKey)) {
+        byCxo.set(cxoKey, { cxoKey, cxoName, ..._emptyAtrRow() });
+      }
+      const bucket = byCxo.get(cxoKey);
+
+      const mode = _normAtrMode(r.atrMode);
+      if (mode === "System") bucket.pending.system++;
+      else bucket.pending.manual++;
+
+      bucket.pending.total++;
+      if (mode === "System") totals.pending.system++;
+      else totals.pending.manual++;
+      totals.pending.total++;
+
+      // Expected closure buckets (timeline relative to today)
+      const due = _dateOnly(r.timeline);
+      if (!due) {
+        bucket.expected.due++;
+        totals.expected.due++;
+      } else {
+        const daysUntil = Math.floor((due.getTime() - today.getTime()) / msDay);
+        if (daysUntil < 0) {
+          bucket.expected.due++;
+          totals.expected.due++;
+        } else if (daysUntil <= 30) {
+          bucket.expected.d0_30++;
+          totals.expected.d0_30++;
+        } else if (daysUntil <= 60) {
+          bucket.expected.d31_60++;
+          totals.expected.d31_60++;
+        } else if (daysUntil <= 90) {
+          bucket.expected.d61_90++;
+          totals.expected.d61_90++;
+        } else {
+          bucket.expected.d91plus++;
+          totals.expected.d91plus++;
+        }
+      }
+    }
+
+    const outRows = Array.from(byCxo.values()).sort((a, b) =>
+      String(a.cxoName || "").localeCompare(String(b.cxoName || ""))
+    );
+
+    // Simple chart payload (horizontal bars)
+    const chart = outRows.map((r) => ({
+      name: r.cxoName,
+      Manual: r.pending.manual,
+      System: r.pending.system,
+      Total: r.pending.total,
+    }));
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      rows: outRows,
+      totals,
+      chart,
+    });
+  } catch (e) {
+    console.error("reports/internal-audit-atr-status error:", e);
+    return res.status(500).json({ error: "Failed to generate report" });
+  }
+});
+
+// CMD-F ANCHOR: reports-summary-api
 
 /* ------------------------------ Reports (XLSX) ------------------------------ */
 app.get("/api/audit-issues/reports/:reportType", async (req, res) => {

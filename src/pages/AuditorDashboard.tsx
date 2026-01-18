@@ -37,6 +37,7 @@ import { AuditIssue } from "@/types/audit";
 
 import { EditAuditModal } from "@/components/EditAuditModal";
 import { AuditorsManager } from "@/components/AuditorsManager";
+import { Reports } from "@/components/Reports";
 
 const API_BASE_URL = `${window.location.origin}/api`;
 
@@ -321,10 +322,11 @@ export const AuditorDashboard: React.FC = () => {
       {/* Analytics first, then Audit Issues, then Excel Upload */}
       <Tabs defaultValue="analytics" className="space-y-4">
         <TabsList
-          className={`grid w-fit ${isAuditor ? "grid-cols-4" : "grid-cols-3"}`}
+          className={`grid w-fit ${isAuditor ? "grid-cols-5" : "grid-cols-3"}`}
         >
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
           <TabsTrigger value="audit-issues">Audit Issues</TabsTrigger>
+          <TabsTrigger value="reports">Reports</TabsTrigger>
           <TabsTrigger value="excel-upload">Excel Upload</TabsTrigger>
           {isAuditor && <TabsTrigger value="auditors">Auditors</TabsTrigger>}
         </TabsList>
@@ -332,6 +334,10 @@ export const AuditorDashboard: React.FC = () => {
         <TabsContent value="analytics" className="space-y-4">
           <Analytics title="Audit Analytics Dashboard" />
         </TabsContent>
+
+        <TabsContent value="reports" className="space-y-4">
+  <Reports viewerEmail={viewerEmail} />
+</TabsContent>
 
         <TabsContent
           value="audit-issues"

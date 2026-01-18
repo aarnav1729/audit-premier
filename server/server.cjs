@@ -641,22 +641,70 @@ function buildDigiRedirectUrl(prefillEmail) {
 
 // How CAM reads Digi’s SSO token (cookie) after login.
 // Digi must set a cookie on Domain=.premierenergies.com so it is sent to audit.premierenergies.com
-const SSO_COOKIE_NAME = process.env.SSO_COOKIE_NAME || "digi_session";
+// MUST match DIGI cookie name
+const SSO_COOKIE_NAME = process.env.SSO_COOKIE_NAME || "sso";
 
 // Verify key/secret (support HS256 or RS256)
 const SSO_JWT_SECRET = process.env.SSO_JWT_SECRET || "";
 const SSO_JWT_PUBLIC_KEY = process.env.SSO_JWT_PUBLIC_KEY || "";
+// CMD+F: SSO_VERIFY_OPTIONS
+const IST_OFFSET_MS = 330 * 60 * 1000;
+function currentIstDay() {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+// How CAM reads Digi’s SSO token (cookie) after login.
+// Digi sets: cookie "sso" (access) and "sso_refresh" (refresh) on Domain=.premierenergies.com
+const SSO_COOKIE_NAME = process.env.DIGI_SSO_COOKIE_NAME || "sso";
+
+// Digi JWT validation (RS256)
+const DIGI_ISSUER = process.env.DIGI_ISSUER || "auth.premierenergies.com";
+const DIGI_AUDIENCE = process.env.DIGI_AUDIENCE || "apps.premierenergies.com";
+
+// Provide either a PEM string OR a file path containing PEM
+const DIGI_AUTH_PUBLIC_KEY = process.env.DIGI_AUTH_PUBLIC_KEY || "";
+const DIGI_AUTH_PUBLIC_KEY_FILE = process.env.DIGI_AUTH_PUBLIC_KEY_FILE || "";
+
+const IST_OFFSET_MS = 330 * 60 * 1000; // +05:30
+function currentIstDay() {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10); // YYYY-MM-DD in IST
+}
+
+function getDigiPublicKeyPem() {
+  if (DIGI_AUTH_PUBLIC_KEY && String(DIGI_AUTH_PUBLIC_KEY).trim()) {
+    return String(DIGI_AUTH_PUBLIC_KEY).replace(/^"(.*)"$/, "$1");
+  }
+  if (DIGI_AUTH_PUBLIC_KEY_FILE && String(DIGI_AUTH_PUBLIC_KEY_FILE).trim()) {
+    return fs.readFileSync(String(DIGI_AUTH_PUBLIC_KEY_FILE).trim(), "utf8");
+  }
+  throw new Error(
+    "DIGI_AUTH_PUBLIC_KEY or DIGI_AUTH_PUBLIC_KEY_FILE not configured"
+  );
+}
 
 function verifySsoJwt(token) {
   if (!token) throw new Error("Missing SSO token");
 
-  if (SSO_JWT_PUBLIC_KEY) {
-    return jwt.verify(token, SSO_JWT_PUBLIC_KEY, { algorithms: ["RS256"] });
+  const pub = getDigiPublicKeyPem();
+
+  const payload = jwt.verify(token, pub, {
+    algorithms: ["RS256"],
+    issuer: DIGI_ISSUER,
+    audience: DIGI_AUDIENCE,
+  });
+
+  // Enforce IST midnight logout (Digi includes payload.day)
+  if (!payload?.day || payload.day !== currentIstDay()) {
+    throw new Error("session_expired_day_change");
   }
-  if (SSO_JWT_SECRET) {
-    return jwt.verify(token, SSO_JWT_SECRET, { algorithms: ["HS256"] });
-  }
-  throw new Error("SSO_JWT_SECRET or SSO_JWT_PUBLIC_KEY not configured");
+
+  return payload;
+}
+
+function hasAuditAppAccess(payload) {
+  const apps = payload?.apps;
+  if (!Array.isArray(apps)) return true; // if older token without apps, don't hard-break
+  return apps.includes("audit");
 }
 
 function getSsoTokenFromReq(req) {
@@ -1289,17 +1337,28 @@ app.delete("/api/auditors/:id", async (req, res) => {
 });
 
 // SSO login: if Digi session cookie is present & valid, return same shape as /api/verify-otp
+// SSO login: if Digi session cookie is present & valid, return identity
 app.post("/api/sso/login", async (req, res) => {
   try {
     const token = getSsoTokenFromReq(req);
     const payload = verifySsoJwt(token);
+
     const email = extractEmailFromSsoPayload(payload);
 
     if (!email || !email.endsWith(INTERNAL_DOMAIN)) {
       return res.status(401).json({ message: "No valid internal SSO session" });
     }
 
-    // Map to EMP for name/id (optional but nice)
+    // Enforce Digi portal app access (user must have "audit" enabled in Digi)
+    if (!hasAuditAppAccess(payload)) {
+      return res.status(403).json({
+        message:
+          "You do not have access to Audit in Digi Portal. Contact admin.",
+        noAuditAccess: true,
+      });
+    }
+
+    // Optional EMP enrichment
     let empID = null;
     let empName = email;
 
@@ -1325,6 +1384,8 @@ app.post("/api/sso/login", async (req, res) => {
       empID,
       empName,
       email,
+      apps: Array.isArray(payload.apps) ? payload.apps : [],
+      roles: Array.isArray(payload.roles) ? payload.roles : [],
     });
   } catch (err) {
     const msg = err?.message || "SSO verification failed";
@@ -1341,10 +1402,8 @@ app.post("/api/send-otp", async (req, res) => {
     const rawEmail = (req.body.email || "").trim();
     const fullEmail = normalizeToEmail(rawEmail);
     // If internal employee -> force Digi SSO
-    if (
-      isInternalEmployeeEmail(rawEmail) ||
-      fullEmail.endsWith(INTERNAL_DOMAIN)
-    ) {
+    // If internal employee -> force Digi SSO (ALWAYS)
+    if (fullEmail.endsWith(INTERNAL_DOMAIN)) {
       return res.status(409).json({
         message: "Internal users must login via Digi SSO.",
         ssoRequired: true,
@@ -1352,24 +1411,28 @@ app.post("/api/send-otp", async (req, res) => {
       });
     }
 
-    const empQ = await spotPool
-      .request()
-      .input("em", sql.NVarChar(255), fullEmail).query(`
-        SELECT EmpID, EmpName 
-        FROM dbo.EMP
-        WHERE EmpEmail = @em AND ActiveFlag = 1
-      `);
-
-    // EMP users OR whitelisted auditors can get OTP
-    let empID = null;
-    if (empQ.recordset.length) {
-      empID = String(empQ.recordset[0].EmpID ?? "");
-    } else if (!(await isAuditorEmail(fullEmail))) {
-      return res.status(404).json({
+    // External users: ONLY auditors are allowed
+    const isAud = await isAuditorEmail(fullEmail);
+    if (!isAud) {
+      return res.status(403).json({
         message:
-          "We do not have this email registered in EMP. If you have a company email ID, please contact HR.",
+          "Only auditors are allowed to login with non-premier email IDs.",
+        notAuditor: true,
       });
     }
+
+    // Optional: EMP enrichment if the email happens to exist in EMP
+    let empID = null;
+    try {
+      const empQ = await spotPool
+        .request()
+        .input("em", sql.NVarChar(255), fullEmail).query(`
+          SELECT EmpID 
+          FROM dbo.EMP
+          WHERE EmpEmail = @em AND ActiveFlag = 1
+        `);
+      if (empQ.recordset?.length) empID = String(empQ.recordset[0].EmpID ?? "");
+    } catch {}
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
     const expiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
@@ -1431,6 +1494,16 @@ app.post("/api/verify-otp", async (req, res) => {
         message: "Internal users must login via Digi SSO.",
         ssoRequired: true,
         redirectUrl: buildDigiRedirectUrl(fullEmail),
+      });
+    }
+
+    // External users: ONLY auditors are allowed
+    const isAud = await isAuditorEmail(fullEmail);
+    if (!isAud) {
+      return res.status(403).json({
+        message:
+          "Only auditors are allowed to login with non-premier email IDs.",
+        notAuditor: true,
       });
     }
 

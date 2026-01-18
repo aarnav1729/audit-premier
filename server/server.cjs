@@ -10,6 +10,9 @@ const morgan = require("morgan");
 const https = require("https");
 const http = require("http");
 const dotenv = require("dotenv");
+const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
+
 dotenv.config();
 
 let auditPool; // auditms DB (AuditIssues, reports, etc.)
@@ -34,6 +37,7 @@ app.options(/.*/, cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+app.use(cookieParser());
 
 /* ------------------------------ Static hosting ------------------------------ */
 app.use((req, res, next) => {
@@ -74,9 +78,9 @@ const SPOT_DB_NAME = process.env.SPOT_DB_NAME || "SPOT";
 const OTP_TABLE = process.env.OTP_TABLE || "AuditPortalLogin"; // <— new table name
 
 const commonDb = {
-  user: process.env.DB_USER || "SPOT_USER",
-  password: process.env.DB_PASS || "Marvik#72@",
-  server: process.env.DB_HOST || "10.0.40.10",
+  user: process.env.DB_USER || "PEL_DB",
+  password: process.env.DB_PASS || "Pel@0184",
+  server: process.env.DB_HOST || "10.0.50.17",
   port: Number(process.env.DB_PORT || 1433),
   options: {
     trustServerCertificate: true,
@@ -348,6 +352,104 @@ async function initDb() {
 
     await spotPool.request().query(loginTableCheck);
     console.log(`✅ ${OTP_TABLE} table present (SPOT DB)`);
+    // ---- One-off seed: ensure Vijay exists in dbo.EMP (SPOT DB) ----
+try {
+  const user = {
+    EmpID: "PEPPL1422",
+    EmpEmail: "vijayendra.kr@premierenergies.com",
+    EmpName: "K R Vijayendra Rao",
+    Dept: "Insurance",
+    SubDept: "Insurance",
+    EmpLocation: "Corporate Office",
+    Designation: "Assistant General Manager",
+  };
+
+  // detect optional columns safely
+  const colsRs = await spotPool.request().query(`
+    SELECT 
+      COL_LENGTH('dbo.EMP','ActiveFlag')  AS HasActiveFlag,
+      COL_LENGTH('dbo.EMP','CreatedAt')   AS HasCreatedAt,
+      COL_LENGTH('dbo.EMP','UpdatedAt')   AS HasUpdatedAt
+  `);
+
+  const flags = colsRs.recordset?.[0] || {};
+  const hasActiveFlag = flags.HasActiveFlag != null;
+  const hasCreatedAt = flags.HasCreatedAt != null;
+  const hasUpdatedAt = flags.HasUpdatedAt != null;
+
+  const reqq = spotPool.request()
+    .input("EmpID", sql.NVarChar(50), user.EmpID)
+    .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
+    .input("EmpName", sql.NVarChar(255), user.EmpName)
+    .input("Dept", sql.NVarChar(255), user.Dept)
+    .input("SubDept", sql.NVarChar(255), user.SubDept)
+    .input("EmpLocation", sql.NVarChar(255), user.EmpLocation)
+    .input("Designation", sql.NVarChar(255), user.Designation);
+
+  if (hasActiveFlag) reqq.input("ActiveFlag", sql.Bit, 1);
+
+  const setParts = [
+    "EmpEmail = @EmpEmail",
+    "EmpName = @EmpName",
+    "Dept = @Dept",
+    "SubDept = @SubDept",
+    "EmpLocation = @EmpLocation",
+    "Designation = @Designation",
+  ];
+  if (hasActiveFlag) setParts.push("ActiveFlag = @ActiveFlag");
+  if (hasUpdatedAt) setParts.push("UpdatedAt = GETDATE()");
+
+  const insertCols = [
+    "EmpID",
+    "EmpEmail",
+    "EmpName",
+    "Dept",
+    "SubDept",
+    "EmpLocation",
+    "Designation",
+  ];
+  const insertVals = [
+    "@EmpID",
+    "@EmpEmail",
+    "@EmpName",
+    "@Dept",
+    "@SubDept",
+    "@EmpLocation",
+    "@Designation",
+  ];
+  if (hasActiveFlag) {
+    insertCols.push("ActiveFlag");
+    insertVals.push("@ActiveFlag");
+  }
+  if (hasCreatedAt) {
+    insertCols.push("CreatedAt");
+    insertVals.push("GETDATE()");
+  }
+  if (hasUpdatedAt) {
+    insertCols.push("UpdatedAt");
+    insertVals.push("GETDATE()");
+  }
+
+  await reqq.query(`
+    IF EXISTS (SELECT 1 FROM dbo.EMP WHERE EmpID = @EmpID)
+    BEGIN
+      UPDATE dbo.EMP
+         SET ${setParts.join(", ")}
+       WHERE EmpID = @EmpID;
+    END
+    ELSE
+    BEGIN
+      INSERT INTO dbo.EMP (${insertCols.join(", ")})
+      VALUES (${insertVals.join(", ")});
+    END;
+  `);
+
+  console.log("✅ Seeded/ensured Vijay in dbo.EMP");
+} catch (e) {
+  console.warn("⚠️ EMP seed (Vijay) failed:", e?.message || e);
+}
+// ---------------------------------------------------------------
+
   } catch (err) {
     console.error("⛔ Failed to initialize database:", err);
     process.exit(1);
@@ -453,6 +555,84 @@ const normalizeToEmail = (raw) => {
   return s.includes("@") ? s : `${s}@premierenergies.com`;
 };
 
+/* ======================= DIGI SSO (internal employees) ======================= */
+
+// Treat emails with no "@" as internal (because normalizeToEmail() appends @premierenergies.com)
+const INTERNAL_DOMAIN = (process.env.INTERNAL_DOMAIN || "@premierenergies.com").toLowerCase();
+
+const isInternalEmployeeEmail = (email) => {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return false;
+  return !e.includes("@") || e.endsWith(INTERNAL_DOMAIN);
+};
+
+// Where to send internal users for login
+// Example: https://digi.premierenergies.com/login
+const DIGI_LOGIN_URL = process.env.DIGI_LOGIN_URL || "https://digi.premierenergies.com/login";
+
+// Where Digi should redirect back after login
+// MUST be your public URL (not localhost)
+const CAM_PUBLIC_ORIGIN = process.env.CAM_PUBLIC_ORIGIN || "https://audit.premierenergies.com";
+
+// Optional: path in CAM to land after Digi login
+const CAM_RETURN_PATH = process.env.CAM_RETURN_PATH || "/"; // could be "/login" too
+
+function buildDigiRedirectUrl(prefillEmail) {
+  const next = `${CAM_PUBLIC_ORIGIN}${CAM_RETURN_PATH}`;
+  const base = String(DIGI_LOGIN_URL || "").replace(/\/+$/, "");
+  const email = String(prefillEmail || "").trim();
+  // Add email so Digi can prefill if it supports it; harmless if ignored
+  return `${base}?redirect=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`;
+}
+
+// How CAM reads Digi’s SSO token (cookie) after login.
+// Digi must set a cookie on Domain=.premierenergies.com so it is sent to audit.premierenergies.com
+const SSO_COOKIE_NAME = process.env.SSO_COOKIE_NAME || "digi_session";
+
+// Verify key/secret (support HS256 or RS256)
+const SSO_JWT_SECRET = process.env.SSO_JWT_SECRET || "";
+const SSO_JWT_PUBLIC_KEY = process.env.SSO_JWT_PUBLIC_KEY || "";
+
+function verifySsoJwt(token) {
+  if (!token) throw new Error("Missing SSO token");
+
+  if (SSO_JWT_PUBLIC_KEY) {
+    return jwt.verify(token, SSO_JWT_PUBLIC_KEY, { algorithms: ["RS256"] });
+  }
+  if (SSO_JWT_SECRET) {
+    return jwt.verify(token, SSO_JWT_SECRET, { algorithms: ["HS256"] });
+  }
+  throw new Error("SSO_JWT_SECRET or SSO_JWT_PUBLIC_KEY not configured");
+}
+
+function getSsoTokenFromReq(req) {
+  // Prefer cookie
+  const c = req.cookies?.[SSO_COOKIE_NAME];
+  if (c) return String(c);
+
+  // Optional: allow bearer
+  const auth = String(req.headers.authorization || "");
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+
+  return "";
+}
+
+function extractEmailFromSsoPayload(payload) {
+  // Be flexible: Digi might store email under different claims
+  const cand = [
+    payload?.email,
+    payload?.upn,
+    payload?.preferred_username,
+    payload?.username,
+    payload?.unique_name,
+    payload?.sub,
+  ]
+    .map((x) => String(x || "").trim().toLowerCase())
+    .find(Boolean);
+
+  return cand || "";
+}
+
 // Validate that all provided emails exist in EMP (ActiveFlag=1)
 async function findMissingEmployees(rawList) {
   const list = Array.from(
@@ -482,12 +662,17 @@ const AUDITOR_EMAILS = String(process.env.AUDITOR_EMAILS || "")
   .toLowerCase()
   .split(/[,\s;]+/)
   .filter(Boolean);
+
 const STATIC_AUDITORS = [
   "santosh.kumar@protivitiglobal.in",
-  "aarnav.singh@premierenergies.com",
   "borra.prasanna@protivitiglobal.in",
   "aman.shah@protivitiglobal.in",
 ];
+
+// ✅ Special viewer who should see ALL issues in MyDashboard
+const SPECIAL_ALL_VIEWER = "manoj.sahoo@premierenergies.com";
+const isSpecialAllViewer = (em) =>
+  String(em || "").toLowerCase() === SPECIAL_ALL_VIEWER;
 
 function parseProcesses(val) {
   if (!val) return [];
@@ -572,6 +757,256 @@ app.use("/api", (req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+
+/* ----------------------------- EMP seed (one-off) ----------------------------- */
+// CMD-F ANCHOR: EMP seed endpoint
+
+const EMP_SEED_TOKEN = process.env.EMP_SEED_TOKEN || ""; // set in .env
+
+app.post("/api/emp/seed-vijayendra", async (req, res) => {
+  try {
+    // simple protection (so this isn't publicly usable)
+    const token =
+      String(req.headers["x-seed-token"] || req.query.token || "").trim();
+
+    if (!EMP_SEED_TOKEN || token !== EMP_SEED_TOKEN) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (!spotPool) {
+      return res.status(503).json({ error: "DB not ready (spotPool)" });
+    }
+
+    const user = {
+      EmpID: "PEPPL1422",
+      EmpEmail: "vijayendra.kr@premierenergies.com",
+      EmpName: "K R Vijayendra Rao",
+      Dept: "Insurance",
+      SubDept: "Insurance",
+      EmpLocation: "Corporate Office",
+      Designation: "Assistant General Manager",
+    };
+
+    // detect optional columns safely (won't fail if they don't exist)
+    const colsRs = await spotPool.request().query(`
+      SELECT 
+        COL_LENGTH('dbo.EMP','ActiveFlag')  AS HasActiveFlag,
+        COL_LENGTH('dbo.EMP','CreatedAt')   AS HasCreatedAt,
+        COL_LENGTH('dbo.EMP','UpdatedAt')   AS HasUpdatedAt
+    `);
+
+    const flags = colsRs.recordset?.[0] || {};
+    const hasActiveFlag = flags.HasActiveFlag != null;
+    const hasCreatedAt = flags.HasCreatedAt != null;
+    const hasUpdatedAt = flags.HasUpdatedAt != null;
+
+    const reqq = spotPool.request()
+      .input("EmpID", sql.NVarChar(50), user.EmpID)
+      .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
+      .input("EmpName", sql.NVarChar(255), user.EmpName)
+      .input("Dept", sql.NVarChar(255), user.Dept)
+      .input("SubDept", sql.NVarChar(255), user.SubDept)
+      .input("EmpLocation", sql.NVarChar(255), user.EmpLocation)
+      .input("Designation", sql.NVarChar(255), user.Designation);
+
+    // optional values
+    if (hasActiveFlag) reqq.input("ActiveFlag", sql.Bit, 1);
+
+    // Build the UPSERT dynamically to include optional columns only if present
+    const setParts = [
+      "EmpEmail = @EmpEmail",
+      "EmpName = @EmpName",
+      "Dept = @Dept",
+      "SubDept = @SubDept",
+      "EmpLocation = @EmpLocation",
+      "Designation = @Designation",
+    ];
+    if (hasActiveFlag) setParts.push("ActiveFlag = @ActiveFlag");
+    if (hasUpdatedAt) setParts.push("UpdatedAt = GETDATE()");
+
+    const insertCols = [
+      "EmpID",
+      "EmpEmail",
+      "EmpName",
+      "Dept",
+      "SubDept",
+      "EmpLocation",
+      "Designation",
+    ];
+    const insertVals = [
+      "@EmpID",
+      "@EmpEmail",
+      "@EmpName",
+      "@Dept",
+      "@SubDept",
+      "@EmpLocation",
+      "@Designation",
+    ];
+    if (hasActiveFlag) {
+      insertCols.push("ActiveFlag");
+      insertVals.push("@ActiveFlag");
+    }
+    if (hasCreatedAt) {
+      insertCols.push("CreatedAt");
+      insertVals.push("GETDATE()");
+    }
+    if (hasUpdatedAt) {
+      insertCols.push("UpdatedAt");
+      insertVals.push("GETDATE()");
+    }
+
+    const upsertSql = `
+      IF EXISTS (SELECT 1 FROM dbo.EMP WHERE EmpID = @EmpID)
+      BEGIN
+        UPDATE dbo.EMP
+           SET ${setParts.join(", ")}
+         WHERE EmpID = @EmpID;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.EMP (${insertCols.join(", ")})
+        VALUES (${insertVals.join(", ")});
+      END;
+
+      SELECT TOP 1 *
+      FROM dbo.EMP
+      WHERE EmpID = @EmpID;
+    `;
+
+    const out = await reqq.query(upsertSql);
+
+    return res.json({
+      success: true,
+      seeded: out.recordset?.[0] || null,
+    });
+  } catch (err) {
+    console.error("EMP seed error:", err);
+    return res.status(500).json({ error: "Failed to seed EMP user" });
+  }
+});
+
+// CMD-F ANCHOR: EMP seed endpoint
+
+
+async function seedVijayendraHandler(req, res) {
+  try {
+    // simple protection (so this isn't publicly usable)
+    const token =
+      String(req.headers["x-seed-token"] || req.query.token || "").trim();
+
+    if (!EMP_SEED_TOKEN || token !== EMP_SEED_TOKEN) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (!spotPool) {
+      return res.status(503).json({ error: "DB not ready (spotPool)" });
+    }
+
+    const user = {
+      EmpID: "PEPPL1422",
+      EmpEmail: "vijayendra.kr@premierenergies.com",
+      EmpName: "K R Vijayendra Rao",
+      Dept: "Insurance",
+      SubDept: "Insurance",
+      EmpLocation: "Corporate Office",
+      Designation: "Assistant General Manager",
+    };
+
+    const colsRs = await spotPool.request().query(`
+      SELECT 
+        COL_LENGTH('dbo.EMP','ActiveFlag')  AS HasActiveFlag,
+        COL_LENGTH('dbo.EMP','CreatedAt')   AS HasCreatedAt,
+        COL_LENGTH('dbo.EMP','UpdatedAt')   AS HasUpdatedAt
+    `);
+
+    const flags = colsRs.recordset?.[0] || {};
+    const hasActiveFlag = flags.HasActiveFlag != null;
+    const hasCreatedAt = flags.HasCreatedAt != null;
+    const hasUpdatedAt = flags.HasUpdatedAt != null;
+
+    const reqq = spotPool.request()
+      .input("EmpID", sql.NVarChar(50), user.EmpID)
+      .input("EmpEmail", sql.NVarChar(255), user.EmpEmail)
+      .input("EmpName", sql.NVarChar(255), user.EmpName)
+      .input("Dept", sql.NVarChar(255), user.Dept)
+      .input("SubDept", sql.NVarChar(255), user.SubDept)
+      .input("EmpLocation", sql.NVarChar(255), user.EmpLocation)
+      .input("Designation", sql.NVarChar(255), user.Designation);
+
+    if (hasActiveFlag) reqq.input("ActiveFlag", sql.Bit, 1);
+
+    const setParts = [
+      "EmpEmail = @EmpEmail",
+      "EmpName = @EmpName",
+      "Dept = @Dept",
+      "SubDept = @SubDept",
+      "EmpLocation = @EmpLocation",
+      "Designation = @Designation",
+    ];
+    if (hasActiveFlag) setParts.push("ActiveFlag = @ActiveFlag");
+    if (hasUpdatedAt) setParts.push("UpdatedAt = GETDATE()");
+
+    const insertCols = [
+      "EmpID",
+      "EmpEmail",
+      "EmpName",
+      "Dept",
+      "SubDept",
+      "EmpLocation",
+      "Designation",
+    ];
+    const insertVals = [
+      "@EmpID",
+      "@EmpEmail",
+      "@EmpName",
+      "@Dept",
+      "@SubDept",
+      "@EmpLocation",
+      "@Designation",
+    ];
+    if (hasActiveFlag) {
+      insertCols.push("ActiveFlag");
+      insertVals.push("@ActiveFlag");
+    }
+    if (hasCreatedAt) {
+      insertCols.push("CreatedAt");
+      insertVals.push("GETDATE()");
+    }
+    if (hasUpdatedAt) {
+      insertCols.push("UpdatedAt");
+      insertVals.push("GETDATE()");
+    }
+
+    const upsertSql = `
+      IF EXISTS (SELECT 1 FROM dbo.EMP WHERE EmpID = @EmpID)
+      BEGIN
+        UPDATE dbo.EMP
+           SET ${setParts.join(", ")}
+         WHERE EmpID = @EmpID;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.EMP (${insertCols.join(", ")})
+        VALUES (${insertVals.join(", ")});
+      END;
+
+      SELECT TOP 1 *
+      FROM dbo.EMP
+      WHERE EmpID = @EmpID;
+    `;
+
+    const out = await reqq.query(upsertSql);
+
+    return res.json({
+      success: true,
+      seeded: out.recordset?.[0] || null,
+    });
+  } catch (err) {
+    console.error("EMP seed error:", err);
+    return res.status(500).json({ error: "Failed to seed EMP user" });
+  }
+}
+
 
 /* ---------------------------- Unlock (Accepted → open) ---------------------------- */
 app.post("/api/audit-issues/:id/unlock", async (req, res) => {
@@ -792,6 +1227,52 @@ app.delete("/api/auditors/:id", async (req, res) => {
   }
 });
 
+// SSO login: if Digi session cookie is present & valid, return same shape as /api/verify-otp
+app.post("/api/sso/login", async (req, res) => {
+  try {
+    const token = getSsoTokenFromReq(req);
+    const payload = verifySsoJwt(token);
+    const email = extractEmailFromSsoPayload(payload);
+
+    if (!email || !email.endsWith(INTERNAL_DOMAIN)) {
+      return res.status(401).json({ message: "No valid internal SSO session" });
+    }
+
+    // Map to EMP for name/id (optional but nice)
+    let empID = null;
+    let empName = email;
+
+    try {
+      const empQ = await spotPool
+        .request()
+        .input("em", sql.NVarChar(255), email)
+        .query(`
+          SELECT TOP 1 EmpID, EmpName
+          FROM dbo.EMP
+          WHERE LOWER(EmpEmail) = LOWER(@em) AND ActiveFlag = 1
+        `);
+
+      if (empQ.recordset?.length) {
+        empID = String(empQ.recordset[0].EmpID ?? "");
+        empName = empQ.recordset[0].EmpName || email;
+      }
+    } catch (e) {
+      console.warn("SSO EMP lookup warning:", e?.message || e);
+    }
+
+    return res.status(200).json({
+      message: "SSO verified successfully",
+      empID,
+      empName,
+      email,
+    });
+  } catch (err) {
+    const msg = err?.message || "SSO verification failed";
+    console.warn("SSO login failed:", msg);
+    return res.status(401).json({ message: msg });
+  }
+});
+
 /* ======================= OTP AUTH (SPOT: EMP + OTPs) ======================= */
 
 // Request OTP (EMP-validated, OTP stored in dbo.AuditPortalLogin)
@@ -799,6 +1280,14 @@ app.post("/api/send-otp", async (req, res) => {
   try {
     const rawEmail = (req.body.email || "").trim();
     const fullEmail = normalizeToEmail(rawEmail);
+// If internal employee -> force Digi SSO
+if (isInternalEmployeeEmail(rawEmail) || fullEmail.endsWith(INTERNAL_DOMAIN)) {
+  return res.status(409).json({
+    message: "Internal users must login via Digi SSO.",
+    ssoRequired: true,
+    redirectUrl: buildDigiRedirectUrl(fullEmail),
+  });
+}
 
     const empQ = await spotPool
       .request()
@@ -874,6 +1363,14 @@ app.post("/api/verify-otp", async (req, res) => {
   try {
     const rawEmail = (req.body.email || "").trim();
     const fullEmail = normalizeToEmail(rawEmail);
+    if (fullEmail.endsWith(INTERNAL_DOMAIN)) {
+      return res.status(409).json({
+        message: "Internal users must login via Digi SSO.",
+        ssoRequired: true,
+        redirectUrl: buildDigiRedirectUrl(fullEmail),
+      });
+    }
+    
     const otp = (req.body.otp || "").trim();
 
     const rs = await spotPool
@@ -923,6 +1420,13 @@ app.get("/api/resolve-role", async (req, res) => {
 
     // ✅ auditors first — even if not present in any issue lists
     // auditors first — even if not present in any issue lists
+    // ✅ Special all-viewer should behave like a normal user in UI routing.
+    // They get "all" scope only inside MyDashboard via the audit-issues list override.
+    if (isSpecialAllViewer(fullEmail)) {
+      return res.json({ role: "user" });
+    }
+
+    // ✅ auditors next
     if (await isAuditorEmail(fullEmail)) {
       return res.json({ role: "auditor" });
     }
@@ -1140,6 +1644,8 @@ app.get("/api/audit-issues/export", async (req, res) => {
     `);
 
     const issues = rows.map((r) => {
+      // ✅ Special all-viewer override: treat any scope as "all"
+
       let ev = [],
         ax = [];
       try {
@@ -1158,26 +1664,41 @@ app.get("/api/audit-issues/export", async (req, res) => {
       };
     });
 
+    const effectiveScope = isSpecialAllViewer(viewer) ? "all" : scope;
+    // 🔐 Enforce same visibility rules as the JSON list route
     // 🔐 Enforce same visibility rules as the JSON list route
     let filtered = issues;
 
-    if (scope === "all") {
+    if (effectiveScope === "all") {
       if (!viewer) return res.status(400).json({ error: "viewer required" });
-      const isGlobal = await isGlobalAuditor(viewer);
-      if (!isGlobal) {
-        const dyn = await listAuditorsFromDb();
-        const me = dyn.find((r) => r.email === viewer.toLowerCase());
-        if (!me) return res.status(403).json({ error: "forbidden" });
-        const allowed = new Set(
-          me.processes.map((p) => String(p || "").toLowerCase())
-        );
-        filtered = issues.filter((r) => {
-          const proc = String(r.process || "").toLowerCase();
-          return allowed.has("*") || allowed.has("all") || allowed.has(proc);
-        });
+
+      // ✅ Special all-viewer override
+      if (isSpecialAllViewer(viewer)) {
+        filtered = issues;
+      } else {
+        const isGlobal = await isGlobalAuditor(viewer);
+
+        if (!isGlobal) {
+          const dyn = await listAuditorsFromDb();
+          const me = dyn.find((r) => r.email === viewer.toLowerCase());
+          if (!me) return res.status(403).json({ error: "forbidden" });
+
+          const allowed = new Set(
+            (me.processes || []).map((p) => String(p || "").toLowerCase())
+          );
+
+          filtered = issues.filter((r) => {
+            const proc = String(r.process || "").toLowerCase();
+            return allowed.has("*") || allowed.has("all") || allowed.has(proc);
+          });
+        } else {
+          filtered = issues;
+        }
       }
     } else {
+      // scope === "mine"
       if (!viewer) return res.status(400).json({ error: "viewer required" });
+
       filtered = issues.filter((r) => {
         const toks = [
           r.personResponsible,
@@ -1249,6 +1770,8 @@ app.get("/api/audit-issues/export", async (req, res) => {
 });
 
 // ======================= Export filtered (XLSX, by Analytics filters) =======================
+// ======================= Export filtered (XLSX, by Analytics filters) =======================
+// CMD-F ANCHOR: export-filtered
 app.get("/api/audit-issues/export-filtered", async (req, res) => {
   try {
     const viewerRaw = String(req.query.viewer || "")
@@ -1256,7 +1779,7 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
       .toLowerCase();
     const scope = String(req.query.scope || "mine"); // "mine" | "all"
     const mode = String(req.query.mode || "upcoming"); // "upcoming" | "recent" | "overdue"
-    const days = Math.max(1, Number(req.query.days || 90)); // 30/60/90 (default 90)
+    const days = Math.max(1, Number(req.query.days || 90)); // default 90
     const viewer = normalizeToEmail(viewerRaw);
 
     const connection = await auditPool.getConnection();
@@ -1272,7 +1795,7 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
     `);
 
     // normalize like the JSON list route
-    const issues = rows.map((r) => {
+    const issues = (rows || []).map((r) => {
       let ev = [],
         ax = [];
       try {
@@ -1283,6 +1806,7 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
       } catch {}
       const effectiveEvidenceStatus =
         r.evidenceStatus || (ev.length ? "Submitted" : null);
+
       return {
         ...r,
         evidenceReceived: ev,
@@ -1291,25 +1815,41 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
       };
     });
 
-    // scope enforcement (same as the other export)
+    const effectiveScope = isSpecialAllViewer(viewer) ? "all" : scope;
+
+    // ---------------- scope enforcement (same as /export) ----------------
     let scoped = issues;
-    if (scope === "all") {
+
+    if (effectiveScope === "all") {
       if (!viewer) return res.status(400).json({ error: "viewer required" });
-      const isGlobal = await isGlobalAuditor(viewer);
-      if (!isGlobal) {
-        const dyn = await listAuditorsFromDb();
-        const me = dyn.find((r) => r.email === viewer.toLowerCase());
-        if (!me) return res.status(403).json({ error: "forbidden" });
-        const allowed = new Set(
-          me.processes.map((p) => String(p || "").toLowerCase())
-        );
-        scoped = issues.filter((r) => {
-          const proc = String(r.process || "").toLowerCase();
-          return allowed.has("*") || allowed.has("all") || allowed.has(proc);
-        });
+
+      // ✅ Special all-viewer override
+      if (isSpecialAllViewer(viewer)) {
+        scoped = issues;
+      } else {
+        const isGlobal = await isGlobalAuditor(viewer);
+
+        if (!isGlobal) {
+          const dyn = await listAuditorsFromDb();
+          const me = dyn.find((r) => r.email === viewer.toLowerCase());
+          if (!me) return res.status(403).json({ error: "forbidden" });
+
+          const allowed = new Set(
+            (me.processes || []).map((p) => String(p || "").toLowerCase())
+          );
+
+          scoped = issues.filter((r) => {
+            const proc = String(r.process || "").toLowerCase();
+            return allowed.has("*") || allowed.has("all") || allowed.has(proc);
+          });
+        } else {
+          scoped = issues;
+        }
       }
     } else {
+      // scope === "mine"
       if (!viewer) return res.status(400).json({ error: "viewer required" });
+
       scoped = issues.filter((r) => {
         const toks = [
           r.personResponsible,
@@ -1326,72 +1866,42 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
       });
     }
 
-    // helper: what's "closed/accepted" and "due date"
-    const isClosedEq = (r) =>
-      String(r.currentStatus || "").toLowerCase() === "closed" ||
-      String(r.evidenceStatus || "").toLowerCase() === "accepted";
-    const dueDateOf = (r) => (r.timeline ? new Date(r.timeline) : null);
+    // ---------------- mode filter ----------------
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const today = new Date(todayStr); // date-only
+    const msDay = 86400000;
 
-    // time window
-    const today = new Date();
-    const start = new Date(today);
-    start.setDate(start.getDate() - days);
-    const end = new Date(today);
-    end.setDate(end.getDate() + days);
-    const startDateOnly = new Date(start.toISOString().slice(0, 10));
-    const endDateOnly = new Date(end.toISOString().slice(0, 10));
-    const todayDateOnly = new Date(today.toISOString().slice(0, 10));
+    const isValidDate = (d) => d instanceof Date && !isNaN(d.getTime());
 
-    // filter based on Analytics' modes
-    let filtered = [];
-    if (mode === "recent") {
-      // accepted/closed within last N days — approximate using updatedAt when closed/accepted
-      filtered = scoped
-        .filter((r) => {
-          if (!isClosedEq(r)) return false;
-          const upd = r.updatedAt ? new Date(r.updatedAt) : null;
-          if (!upd) return false;
-          const d = new Date(upd.toISOString().slice(0, 10));
-          return d >= startDateOnly && d <= todayDateOnly;
-        })
-        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-    } else if (mode === "overdue") {
-      // overdue in the last N days: timeline < today AND >= start (and not closed)
-      filtered = scoped
-        .filter((r) => {
-          if (isClosedEq(r)) return false;
-          const d = dueDateOf(r);
-          if (!d) return false;
-          const dd = new Date(d.toISOString().slice(0, 10));
-          return dd < todayDateOnly && dd >= startDateOnly;
-        })
-        .sort((a, b) => new Date(a.timeline || 0) - new Date(b.timeline || 0));
-    } else {
-      // upcoming: due between today and end (inclusive), not closed
-      filtered = scoped
-        .filter((r) => {
-          if (isClosedEq(r)) return false;
-          const d = dueDateOf(r);
-          if (!d) return false;
-          const dd = new Date(d.toISOString().slice(0, 10));
-          return dd >= todayDateOnly && dd <= endDateOnly;
-        })
-        .sort((a, b) => new Date(a.timeline || 0) - new Date(b.timeline || 0));
-    }
-
-    // shape friendly rows (detailed)
-    const daysBetween = (a, b) => Math.floor((a - b) / 86400000);
-    const agingText = (r) => {
-      const d = dueDateOf(r);
-      if (!d) return "";
-      const dd = new Date(d.toISOString().slice(0, 10));
-      const t0 = todayDateOnly;
-      const diff = daysBetween(t0, dd);
-      if (diff > 0) return `${diff} day(s) overdue`;
-      if (diff === 0) return `due today`;
-      return `in ${Math.abs(diff)} day(s)`;
+    const timelineDateOnly = (t) => {
+      if (!t) return null;
+      const d = new Date(String(t).slice(0, 10));
+      return isValidDate(d) ? d : null;
     };
 
+    let filtered = scoped;
+
+    if (mode === "upcoming") {
+      const max = new Date(today.getTime() + days * msDay);
+      filtered = scoped.filter((r) => {
+        const d = timelineDateOnly(r.timeline);
+        return d && d >= today && d <= max;
+      });
+    } else if (mode === "overdue") {
+      filtered = scoped.filter((r) => {
+        const d = timelineDateOnly(r.timeline);
+        return d && d < today;
+      });
+    } else if (mode === "recent") {
+      // "recent" = created in last N days
+      const min = new Date(today.getTime() - days * msDay);
+      filtered = scoped.filter((r) => {
+        const c = r.createdAt ? new Date(r.createdAt) : null;
+        return c && isValidDate(c) && c >= min;
+      });
+    }
+
+    // ---------------- export shaping ----------------
     const exportRows = filtered.map((r) => ({
       "Serial #": r.serialNumber,
       "Fiscal Year": r.fiscalYear,
@@ -1417,20 +1927,25 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
       "Action Required": r.actionRequired,
       "Coverage Start Month": r.startMonth,
       "Coverage End Month": r.endMonth,
-      "Accepted/Updated On": r.updatedAt
-        ? new Date(r.updatedAt).toISOString().slice(0, 10)
-        : "",
-      Aging: agingText(r),
+      "Evidence Count": Array.isArray(r.evidenceReceived)
+        ? r.evidenceReceived.length
+        : 0,
+      "Annexure Count": Array.isArray(r.annexure) ? r.annexure.length : 0,
       "Created At": r.createdAt,
       "Updated At": r.updatedAt,
     }));
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(exportRows);
-    XLSX.utils.book_append_sheet(wb, ws, "Filtered_Report");
+    XLSX.utils.book_append_sheet(wb, ws, "Audit_Issues_Filtered");
 
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-    const filename = `Audit_Report_${mode}_${days}d_${new Date()
+
+    const safeMode = ["upcoming", "recent", "overdue"].includes(mode)
+      ? mode
+      : "filtered";
+
+    const filename = `Audit_Issues_${safeMode}_${scope}_${new Date()
       .toISOString()
       .slice(0, 10)}.xlsx`;
 
@@ -1440,8 +1955,8 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
     );
     return res.send(buf);
   } catch (err) {
-    console.error("⛔ Export filtered error:", err);
-    return res.status(500).json({ error: "Failed to export filtered report" });
+    console.error("⛔ Export filtered generation error:", err);
+    return res.status(500).json({ error: "Failed to export filtered issues" });
   }
 });
 
@@ -1731,10 +2246,22 @@ app.get("/api/audit-issues", async (req, res) => {
       };
     });
 
+    // ✅ Special all-viewer override (ignore scope param)
+    if (viewer && isSpecialAllViewer(viewer)) {
+      return res.status(200).json(issues);
+    }
+
     // 🔐 enforce scope
     if (scope === "all") {
       if (!viewer) return res.status(400).json({ error: "viewer required" });
+
+      // ✅ allow Manoj to see all issues even if not an auditor
+      if (isSpecialAllViewer(viewer)) {
+        return res.status(200).json(issues);
+      }
+
       const isGlobal = await isGlobalAuditor(viewer);
+
       if (!isGlobal) {
         // process-scoped auditor: return only issues they’re allowed to see
         const dyn = await listAuditorsFromDb();
@@ -2855,7 +3382,6 @@ app.get("/api/audit-issues/export-stakeholders", async (req, res) => {
       .json({ error: "Failed to export unique stakeholders" });
   }
 });
-
 
 /* --------------------------------- SPA fallthrough -------------------------- */
 app.get(/.*/, (req, res) => {

@@ -15,6 +15,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { EvidenceViewer } from "@/components/EvidenceViewer";
 
 const API_BASE_URL = `${window.location.origin}/api`;
+// --- add near top, after API_BASE_URL ---
+const SPECIAL_ALL_VIEWER = "manoj.sahoo@premierenergies.com";
 
 /** Split a semicolon/comma list into lowercased tokens. */
 function splitEmails(s?: string) {
@@ -40,6 +42,11 @@ function splitEmailsNorm(s?: string) {
     .filter(Boolean);
 }
 
+const safeEvidence = (issue: AuditIssue) =>
+  Array.isArray((issue as any).evidenceReceived)
+    ? ((issue as any).evidenceReceived as any[])
+    : [];
+
 /** Return per-issue capability flags for the given user email. */
 function getCaps(issue: AuditIssue, userEmail?: string) {
   const e = normalizeEmailLocal(userEmail);
@@ -59,6 +66,9 @@ function getCaps(issue: AuditIssue, userEmail?: string) {
 export const MyDashboard: React.FC = () => {
   const { user } = useAuth();
   const me = normalizeEmailLocal(user?.email || "");
+  const isSpecialAllViewer =
+  me === normalizeEmailLocal(SPECIAL_ALL_VIEWER);
+
   const [issues, setIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +76,75 @@ export const MyDashboard: React.FC = () => {
 
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [selectedEvidence, setSelectedEvidence] = useState<any[]>([]);
+
+  // ✅ Overdue filter UI state for Manoj only
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const parseFlexibleDate = (raw?: any): Date | null => {
+    if (!raw) return null;
+
+    // If it's already a Date
+    if (raw instanceof Date && !isNaN(raw.getTime())) return raw;
+
+    const s = String(raw).trim();
+    if (!s) return null;
+
+    // Attempt native parse first (handles ISO)
+    const native = new Date(s);
+    if (!isNaN(native.getTime())) return native;
+
+    // Handle DD/MM/YYYY or DD-MM-YYYY
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]);
+      const yyyy = Number(m[3]);
+      const d = new Date(yyyy, mm - 1, dd);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // Handle YYYY/MM/DD or YYYY-MM-DD explicitly
+    const m2 = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+    if (m2) {
+      const yyyy = Number(m2[1]);
+      const mm = Number(m2[2]);
+      const dd = Number(m2[3]);
+      const d = new Date(yyyy, mm - 1, dd);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    return null;
+  };
+
+  const toDateOnly = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+  // helper: date-only compare
+  const isOverdue = (i: AuditIssue) => {
+    // Try common due-date fields you might have across versions
+    const t =
+      (i as any).timeline ??
+      (i as any).dueDate ??
+      (i as any).targetDate ??
+      (i as any).expectedClosureDate ??
+      null;
+
+    const dueRaw = parseFlexibleDate(t);
+    if (!dueRaw) return false;
+
+    const currentStatus = String((i as any).currentStatus || "").toLowerCase();
+    const evidenceStatus = String(
+      (i as any).evidenceStatus || ""
+    ).toLowerCase();
+
+    // treat closed/accepted as not overdue for filter clarity
+    if (currentStatus === "closed") return false;
+    if (evidenceStatus === "accepted") return false;
+
+    const due = toDateOnly(dueRaw);
+    const today = toDateOnly(new Date());
+
+    return due < today;
+  };
 
   // Server-side filtering: fetch ONLY rows where the logged-in user
   // is in PR / Approver / CXO via ?viewer=<email>
@@ -82,20 +161,31 @@ export const MyDashboard: React.FC = () => {
 
       const url = new URL(`${API_BASE_URL}/audit-issues`);
       url.searchParams.set("viewer", me.toLowerCase());
+      
+      // ✅ IMPORTANT: never let backend infer scope
+      url.searchParams.set("scope", isSpecialAllViewer ? "all" : "mine");
+      
+
       const res = await fetch(url.toString(), { signal });
       if (!res.ok) throw new Error(`Status ${res.status}`);
 
       const data: AuditIssue[] = await res.json();
-      // Double-guard in case the API ever misbehaves:
-      const e = me.toLowerCase();
-      const mine = (data || []).filter((i) => {
-        return (
-          splitEmails(i.personResponsible).includes(e) ||
-          splitEmails(i.approver).includes(e) ||
-          splitEmails(i.cxoResponsible).includes(e)
-        );
-      });
-      setIssues(mine);
+
+      if (isSpecialAllViewer) {
+        // ✅ Manoj sees all returned issues
+        setIssues(data || []);
+      } else {
+        // Double-guard in case the API ever misbehaves:
+        const e = me.toLowerCase();
+        const mine = (data || []).filter((i) => {
+          return (
+            splitEmails(i.personResponsible).includes(e) ||
+            splitEmails(i.approver).includes(e) ||
+            splitEmails(i.cxoResponsible).includes(e)
+          );
+        });
+        setIssues(mine);
+      }
     } catch (err: any) {
       if (err?.name === "AbortError") return;
       console.error(err);
@@ -109,7 +199,7 @@ export const MyDashboard: React.FC = () => {
     const controller = new AbortController();
     loadMyIssues(controller.signal);
     return () => controller.abort();
-  }, [me]);
+  }, [me, isSpecialAllViewer]);
 
   // 🔎 Derive ALL roles the current user holds across loaded issues
   const myRoles = useMemo(() => {
@@ -126,12 +216,14 @@ export const MyDashboard: React.FC = () => {
   }, [issues, me]);
 
   const viewEvidence = (issue: AuditIssue) => {
-    setSelectedEvidence(issue.evidenceReceived);
+    setSelectedEvidence(safeEvidence(issue));
     setEvidenceModalOpen(true);
   };
 
   // CMD-F ANCHOR: const actionColumn = (issue: AuditIssue) => {
   const actionColumn = (issue: AuditIssue) => {
+    const evidence = safeEvidence(issue);
+
     const caps = getCaps(issue, me);
     const locked =
       (issue as any).isLocked === 1 ||
@@ -235,7 +327,7 @@ export const MyDashboard: React.FC = () => {
 
     return (
       <div className="flex flex-col gap-2">
-        {issue.evidenceReceived.length > 0 && (
+        {evidence.length > 0 && (
           <Button
             variant="outline"
             size="sm"
@@ -285,6 +377,12 @@ export const MyDashboard: React.FC = () => {
     );
   };
 
+  const displayedIssues = useMemo(() => {
+    if (!isSpecialAllViewer) return issues;
+    if (!overdueOnly) return issues;
+    return issues.filter(isOverdue);
+  }, [issues, overdueOnly, isSpecialAllViewer]);
+
   if (loading) return <div className="p-6 text-center">Loading…</div>;
   if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
 
@@ -293,15 +391,20 @@ export const MyDashboard: React.FC = () => {
       <Tabs defaultValue="analytics" className="space-y-4">
         <TabsList className="grid w-fit grid-cols-2">
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
-          <TabsTrigger value="my-issues">My Issues</TabsTrigger>
+          <TabsTrigger value="my-issues">
+            {isSpecialAllViewer ? "All Issues" : "My Issues"}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="analytics" className="space-y-4">
-          {/* Force “mine” scope so only the logged-in user's issues are analyzed */}
           <Analytics
-            title="My Analytics Dashboard"
-            auditIssues={issues}
-            mode="mine"
+            title={
+              isSpecialAllViewer
+                ? "All Issues Analytics Dashboard"
+                : "My Analytics Dashboard"
+            }
+            auditIssues={displayedIssues}
+            mode={isSpecialAllViewer ? "all" : "mine"}
           />
         </TabsContent>
 
@@ -312,10 +415,32 @@ export const MyDashboard: React.FC = () => {
                 Welcome back to CAM {user?.name || me}!
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
+              {/* ✅ Extra Overdue filter for Manoj */}
+              {isSpecialAllViewer && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant={overdueOnly ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setOverdueOnly((s) => !s)}
+                    title="Show only overdue issues"
+                  >
+                    Overdue
+                  </Button>
+                  <span className="text-sm text-muted-foreground">
+                    {overdueOnly
+                      ? "Showing overdue only"
+                      : "Showing all issues"}
+                  </span>
+                </div>
+              )}
+
               <AuditTable
-                auditIssues={issues}
-                title="My Audit Issues"
+                auditIssues={displayedIssues}
+                title={
+                  isSpecialAllViewer ? "All Audit Issues" : "My Audit Issues"
+                }
                 actionColumn={actionColumn}
                 viewer={me}
               />

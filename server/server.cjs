@@ -12,7 +12,8 @@ const http = require("http");
 const dotenv = require("dotenv");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
-
+const session = require("express-session");
+const axios = require("axios");
 dotenv.config();
 
 let auditPool; // auditms DB (AuditIssues, reports, etc.)
@@ -24,7 +25,7 @@ require("isomorphic-fetch");
 const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-
+app.set("trust proxy", 1);
 /* ----------------------------- CORS & middleware ---------------------------- */
 app.use(
   cors({
@@ -38,6 +39,80 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 app.use(cookieParser());
+app.use(
+  session({
+    name: "audit.sid", // Unique name for the audit session
+    secret: process.env.SESSION_SECRET || "audit-secret-key",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 12 * 60 * 60 * 1000, // 12 hours
+    },
+  })
+);
+// CMD-F ANCHOR: cam-otp-session
+/* ------------------------- Auth Key Configuration ------------------------- */
+/**
+ * CAM (local app) session keys (used ONLY for audit_session cookie)
+ */
+const CAM_PRIVATE_KEY_PATH = path.join(__dirname, "keys", "auth-private.pem");
+const CAM_PUBLIC_KEY_PATH = path.join(__dirname, "keys", "auth-public.pem");
+
+let CAM_PRIVATE_KEY, CAM_PUBLIC_KEY;
+try {
+  CAM_PRIVATE_KEY = fs.readFileSync(CAM_PRIVATE_KEY_PATH, "utf8");
+  CAM_PUBLIC_KEY = fs.readFileSync(CAM_PUBLIC_KEY_PATH, "utf8");
+  console.log("✅ CAM auth keys loaded successfully (RS256)");
+} catch (e) {
+  console.error(
+    "❌ Critical: Failed to load CAM auth keys from /keys",
+    e.message
+  );
+}
+
+// CMD-F ANCHOR: cam-otp-session
+const CAM_SESSION_COOKIE = process.env.CAM_SESSION_COOKIE || "audit_session";
+const CAM_SESSION_TTL_HOURS = Number(process.env.CAM_SESSION_TTL_HOURS || 12);
+
+/**
+ * Mints a local application session signed with CAM PRIVATE key.
+ */
+function setCamSession(res, payload) {
+  const token = jwt.sign(payload, CAM_PRIVATE_KEY, {
+    algorithm: "RS256",
+    expiresIn: `${CAM_SESSION_TTL_HOURS}h`,
+  });
+
+  const isProd = process.env.NODE_ENV === "production";
+  res.cookie(CAM_SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax",
+    path: "/",
+  });
+
+  return token;
+}
+
+/**
+ * Verifies the local application session using CAM PUBLIC key.
+ */
+function readCamSession(req) {
+  const token = req.cookies?.[CAM_SESSION_COOKIE];
+  if (!token) return null;
+  try {
+    return jwt.verify(token, CAM_PUBLIC_KEY, { algorithms: ["RS256"] });
+  } catch {
+    return null;
+  }
+}
+
+function clearCamSession(res) {
+  res.clearCookie(CAM_SESSION_COOKIE, { path: "/" });
+}
 
 /* ------------------------------ Static hosting ------------------------------ */
 app.use((req, res, next) => {
@@ -53,6 +128,180 @@ app.use((req, res, next) => {
   next();
 });
 
+// CMD-F ANCHOR: sso-bootstrap-mw
+app.use((req, res, next) => {
+  try {
+    // Only bootstrap on the main SPA page loads (not API, not assets)
+    if (req.method !== "GET") return next();
+    if (req.path.startsWith("/api")) return next();
+
+    const accept = String(req.headers.accept || "");
+    const wantsHtml = accept.includes("text/html");
+    if (!wantsHtml) return next();
+
+    // If already have local session, do nothing
+    const existing = readCamSession(req);
+    if (existing?.email) return next();
+
+    // If Digi cookie exists, verify it and mint a local CAM session
+    const tok = getSsoTokenFromReq(req);
+    if (!tok) return next();
+
+    const payload = verifySsoJwt(tok);
+    if (!hasAuditAppAccess(payload)) return next();
+
+    const email = extractEmailFromSsoPayload(payload);
+    if (!email) return next();
+    if (!isInternalEmployeeEmail(email)) return next();
+
+    // Mint local session so the SPA stays logged in even if Digi cookie isn't used on XHR
+    setCamSession(res, {
+      email: email.toLowerCase(),
+      mode: "sso",
+      day: currentIstDay(),
+    });
+
+    return next();
+  } catch (e) {
+    // never block page load
+    return next();
+  }
+});
+// CMD-F ANCHOR: sso-bootstrap-mw
+// CMD-F ANCHOR: auth-endpoints
+
+// 1. Session Bootstrap Check (Used by useAuth.tsx and Login.tsx)
+app.get("/api/session", (req, res, next) => next());
+// 2. Role Resolution (Determines if user goes to /auditor or /my)
+app.get("/api/resolve-role", async (req, res) => {
+  const email = String(req.query.email || "")
+    .trim()
+    .toLowerCase();
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  if (await isAuditorEmail(email)) {
+    return res.json({ role: "auditor" });
+  }
+
+  if (await isApproverEmail(email)) {
+    return res.json({ role: "approver" });
+  }
+
+  res.json({ role: "user" });
+});
+
+// 3. OTP Generation & Dispatch
+app.post("/api/otp/send", async (req, res) => {
+  const { email } = req.body;
+  const em = String(email || "").toLowerCase();
+
+  // Security: Only send OTP to authorized auditors or internal employees
+  const isAud = await isAuditorEmail(em);
+  const isInt = isInternalEmployeeEmail(em);
+
+  if (!isAud && !isInt) {
+    return res
+      .status(403)
+      .json({ error: "User not authorized to access this portal." });
+  }
+
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const expiry = new Date(Date.now() + 15 * 60 * 1000); // 15 min expiry
+
+  try {
+    await spotPool
+      .request()
+      .input("user", sql.NVarChar, em)
+      .input("otp", sql.NVarChar, otp)
+      .input("exp", sql.DateTime2, expiry).query(`
+        IF EXISTS (SELECT 1 FROM dbo.${OTP_TABLE} WHERE Username = @user)
+          UPDATE dbo.${OTP_TABLE} SET OTP = @otp, OTP_Expiry = @exp WHERE Username = @user
+        ELSE
+          INSERT INTO dbo.${OTP_TABLE} (Username, OTP, OTP_Expiry) VALUES (@user, @otp, @exp)
+      `);
+
+    await sendEmail(
+      em,
+      "Your Login OTP - Comprehensive Audit Management",
+      emailTemplate({
+        title: "Login Verification",
+        paragraphs: [
+          "Please use the one-time password below to sign in to your CAM account.",
+        ],
+        highlight: otp,
+        footerNote: "If you did not request this, please ignore this email.",
+      })
+    );
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("OTP send failed:", e);
+    res.status(500).json({ error: "Failed to generate/send OTP." });
+  }
+});
+
+// 4. OTP Verification & Session Minting
+app.post("/api/otp/verify", async (req, res) => {
+  const { email, otp } = req.body;
+  const em = String(email || "").toLowerCase();
+
+  try {
+    const rs = await spotPool
+      .request()
+      .input("user", sql.NVarChar, em)
+      .query(
+        `SELECT OTP, OTP_Expiry FROM dbo.${OTP_TABLE} WHERE Username = @user`
+      );
+
+    const record = rs.recordset?.[0];
+    if (
+      !record ||
+      record.OTP !== String(otp) ||
+      new Date(record.OTP_Expiry) < new Date()
+    ) {
+      return res.status(401).json({ error: "Invalid or expired OTP." });
+    }
+
+    setCamSession(res, { email: em, mode: "otp", day: currentIstDay() });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: "Verification system error." });
+  }
+});
+
+app.post("/api/logout", (req, res) => {
+  clearCamSession(res);
+  res.json({ success: true });
+});
+
+// CMD-F ANCHOR: spa-login-redirect
+app.get(["/login", "/Login"], (req, res, next) => {
+  try {
+    const sess = readCamSession(req);
+    if (sess?.email) return res.redirect(302, "/");
+
+    const tok = getSsoTokenFromReq(req);
+    if (tok) {
+      try {
+        const payload = verifySsoJwt(tok);
+        if (hasAuditAppAccess(payload)) {
+          const email = extractEmailFromSsoPayload(payload);
+          if (email && isInternalEmployeeEmail(email)) {
+            setCamSession(res, {
+              email: email.toLowerCase(),
+              mode: "sso",
+              day: currentIstDay(),
+            });
+            return res.redirect(302, "/");
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+  return next();
+});
+
+// CMD-F ANCHOR: auth-endpoints
 app.use(express.static(path.join(__dirname, "../dist")));
 
 const uploadsDir = path.join(__dirname, "uploads");
@@ -79,7 +328,7 @@ const OTP_TABLE = process.env.OTP_TABLE || "AuditPortalLogin"; // <— new table
 
 const commonDb = {
   user: process.env.DB_USER || "PEL_DB",
-  password: process.env.DB_PASS || "Pel@0184",
+  password: process.env.DB_PASS || "V@aN3#@VaN",
   server: process.env.DB_HOST || "10.0.50.17",
   port: Number(process.env.DB_PORT || 1433),
   options: {
@@ -514,6 +763,52 @@ const convertExcelDate = (excelDate) => {
   return jsDate.toISOString().split("T")[0];
 };
 
+// CMD-F ANCHOR: emp-lookup-by-email
+async function lookupEmpByEmail(email) {
+  const em = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!em || !spotPool) return { empID: null, empName: em || null };
+
+  try {
+    // Check if ActiveFlag exists (some EMP tables may not have it)
+    const cols = await spotPool.request().query(`
+      SELECT COL_LENGTH('dbo.EMP','ActiveFlag') AS HasActiveFlag
+    `);
+    const hasActiveFlag = cols.recordset?.[0]?.HasActiveFlag != null;
+
+    const req = spotPool.request().input("em", sql.NVarChar(255), em);
+
+    const q = hasActiveFlag
+      ? `
+        SELECT TOP 1 EmpID, EmpName
+        FROM dbo.EMP
+        WHERE LOWER(EmpEmail) = LOWER(@em)
+          AND (ActiveFlag = 1 OR ActiveFlag IS NULL)
+      `
+      : `
+        SELECT TOP 1 EmpID, EmpName
+        FROM dbo.EMP
+        WHERE LOWER(EmpEmail) = LOWER(@em)
+      `;
+
+    const rs = await req.query(q);
+
+    if (rs.recordset?.length) {
+      return {
+        empID: rs.recordset[0].EmpID ?? null,
+        empName: rs.recordset[0].EmpName || em,
+      };
+    }
+
+    return { empID: null, empName: em };
+  } catch (e) {
+    console.warn("EMP lookup failed:", e?.message || e);
+    return { empID: null, empName: em };
+  }
+}
+// CMD-F ANCHOR: emp-lookup-by-email
+
 // Reset identity to 1 when the table is empty (next insert becomes 1)
 async function reseedSerialIfEmpty() {
   try {
@@ -640,93 +935,292 @@ function buildDigiRedirectUrl(prefillEmail) {
 }
 
 // How CAM reads Digi’s SSO token (cookie) after login.
-// Digi must set a cookie on Domain=.premierenergies.com so it is sent to audit.premierenergies.com
-// MUST match DIGI cookie name
-const SSO_COOKIE_NAME = process.env.SSO_COOKIE_NAME || "sso";
-
-// Verify key/secret (support HS256 or RS256)
-const SSO_JWT_SECRET = process.env.SSO_JWT_SECRET || "";
-const SSO_JWT_PUBLIC_KEY = process.env.SSO_JWT_PUBLIC_KEY || "";
-// CMD+F: SSO_VERIFY_OPTIONS
-const IST_OFFSET_MS = 330 * 60 * 1000;
-function currentIstDay() {
-  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
-}
 
 // How CAM reads Digi’s SSO token (cookie) after login.
 // Digi sets: cookie "sso" (access) and "sso_refresh" (refresh) on Domain=.premierenergies.com
-const SSO_COOKIE_NAME = process.env.DIGI_SSO_COOKIE_NAME || "sso";
 
 // Digi JWT validation (RS256)
+/* -------------------------- SSO Helper Functions -------------------------- */
+
+const SSO_COOKIE_NAME = process.env.DIGI_SSO_COOKIE_NAME || "sso";
+const SSO_COOKIE_CANDIDATES = Array.from(
+  new Set(
+    String(process.env.DIGI_SSO_COOKIE_NAMES || "")
+      .split(/[,\s;]+/)
+      .filter(Boolean)
+      .concat([SSO_COOKIE_NAME, "sso", "sso_token"])
+  )
+);
+
+/**
+ * Extracts the Digi SSO token from cookies or Authorization header.
+ */
+function getSsoTokenFromReq(req) {
+  // 1. Try candidates in cookies
+  for (const name of SSO_COOKIE_CANDIDATES) {
+    if (req.cookies?.[name]) return req.cookies[name];
+  }
+
+  // 2. Try Authorization header
+  const auth = req.headers.authorization;
+  if (auth && auth.toLowerCase().startsWith("bearer ")) {
+    return auth.slice(7);
+  }
+  return null;
+}
+
+/**
+ * Checks if the SSO payload has permission for this specific app.
+ */
+function hasAuditAppAccess(payload) {
+  if (!payload) return false;
+  if (payload.isAdmin) return true; // Global admins allowed
+
+  const apps = Array.isArray(payload.apps) ? payload.apps : [];
+  // Adjust 'cam' or 'audit' to match whatever identifier Digi uses for this app
+  return (
+    apps.includes("audit") || apps.includes("cam") || apps.includes("auditms")
+  );
+}
+
+// CMD-F ANCHOR: digi-jwt-verify
+
+// Digi JWT validation (RS256 usually)
 const DIGI_ISSUER = process.env.DIGI_ISSUER || "auth.premierenergies.com";
 const DIGI_AUDIENCE = process.env.DIGI_AUDIENCE || "apps.premierenergies.com";
 
-// Provide either a PEM string OR a file path containing PEM
+// Provide either a PEM string OR a file path containing Digi's PEM (PUBLIC KEY / CERT)
 const DIGI_AUTH_PUBLIC_KEY = process.env.DIGI_AUTH_PUBLIC_KEY || "";
-const DIGI_AUTH_PUBLIC_KEY_FILE = process.env.DIGI_AUTH_PUBLIC_KEY_FILE || "";
+const DIGI_AUTH_PUBLIC_KEY_FILE =
+  process.env.DIGI_AUTH_PUBLIC_KEY_FILE ||
+  path.join(__dirname, "keys", "digi-auth-public.pem");
 
-const IST_OFFSET_MS = 330 * 60 * 1000; // +05:30
-function currentIstDay() {
-  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10); // YYYY-MM-DD in IST
+// Optional (ONLY if Digi ever uses HS256 in some env)
+const DIGI_AUTH_HS_SECRET = process.env.DIGI_AUTH_HS_SECRET || "";
+
+function _normalizePem(x) {
+  return String(x || "")
+    .trim()
+    .replace(/^"(.*)"$/, "$1")
+    .replace(/\\n/g, "\n");
+}
+
+function _looksLikeAsymmetricPem(pem) {
+  return /BEGIN (PUBLIC KEY|RSA PUBLIC KEY|CERTIFICATE)/.test(
+    String(pem || "")
+  );
 }
 
 function getDigiPublicKeyPem() {
   if (DIGI_AUTH_PUBLIC_KEY && String(DIGI_AUTH_PUBLIC_KEY).trim()) {
-    return String(DIGI_AUTH_PUBLIC_KEY).replace(/^"(.*)"$/, "$1");
+    return _normalizePem(DIGI_AUTH_PUBLIC_KEY);
   }
-  if (DIGI_AUTH_PUBLIC_KEY_FILE && String(DIGI_AUTH_PUBLIC_KEY_FILE).trim()) {
+
+  if (DIGI_AUTH_PUBLIC_KEY_FILE && fs.existsSync(DIGI_AUTH_PUBLIC_KEY_FILE)) {
     return fs.readFileSync(String(DIGI_AUTH_PUBLIC_KEY_FILE).trim(), "utf8");
   }
+
+  return "";
+}
+
+function verifySsoJwt(token) {
+  if (!token) {
+    const err = new Error("no_sso_token");
+    err.code = "NO_SSO_TOKEN";
+    throw err;
+  }
+
+  const clean = String(token)
+    .trim()
+    .replace(/^bearer\s+/i, "");
+
+  // must be a JWT
+  if (clean.split(".").length !== 3) {
+    const err = new Error("sso_token_not_jwt");
+    err.code = "TOKEN_NOT_JWT";
+    err.detail =
+      "SSO cookie value is not a JWT (expected 3 dot-separated parts). " +
+      "Check DIGI_SSO_COOKIE_NAMES and ensure you're reading the access token cookie (not refresh).";
+    throw err;
+  }
+
+  const header = jwt.decode(clean, { complete: true })?.header || {};
+  const alg = String(header.alg || "RS256").toUpperCase();
+
+  // Never allow "none"
+  if (alg === "NONE") {
+    const err = new Error("jwt_alg_none_not_allowed");
+    err.code = "ALG_NONE";
+    throw err;
+  }
+
+  const issuerCandidates = _issuerVariants(DIGI_ISSUER);
+  const audienceCandidates = _audVariants(
+    process.env.DIGI_AUDIENCES || DIGI_AUDIENCE
+  );
+
+  // Choose key based on token header algorithm
+  let keyToUse = "";
+
+  if (alg.startsWith("RS")) {
+    keyToUse = getDigiPublicKeyPem();
+
+    // 🔥 This is the exact cause of your current error: key is not a PEM public key/cert
+    if (!_looksLikeAsymmetricPem(keyToUse)) {
+      const err = new Error("digi_public_key_invalid");
+      err.code = "DIGI_KEY_INVALID";
+      err.detail =
+        "Expected Digi PUBLIC KEY / CERT PEM for RS256, but DIGI_AUTH_PUBLIC_KEY(_FILE) is missing or not PEM. " +
+        "Create server/keys/digi-auth-public.pem with -----BEGIN PUBLIC KEY----- ... or set DIGI_AUTH_PUBLIC_KEY env with \\n newlines.";
+      throw err;
+    }
+  } else if (alg.startsWith("HS")) {
+    keyToUse = String(DIGI_AUTH_HS_SECRET || "").trim();
+    if (!keyToUse) {
+      const err = new Error("digi_hs_secret_missing");
+      err.code = "DIGI_HS_SECRET_MISSING";
+      err.detail = `Token alg=${alg} but DIGI_AUTH_HS_SECRET not set.`;
+      throw err;
+    }
+  } else {
+    const err = new Error("unsupported_jwt_alg");
+    err.code = "UNSUPPORTED_ALG";
+    err.detail = `Unsupported JWT alg: ${alg}`;
+    throw err;
+  }
+
+  // Verify
+  try {
+    const payload = jwt.verify(clean, keyToUse, {
+      algorithms: [alg],
+      issuer: issuerCandidates.length ? issuerCandidates : undefined,
+      audience: audienceCandidates.length ? audienceCandidates : undefined,
+      clockTolerance: 300,
+    });
+
+    // Optional “day” policy (keep your logic)
+    if (payload?.day) {
+      const d = String(payload.day).slice(0, 10);
+      const todayIst = currentIstDay();
+      const todayUtc = currentUtcDay();
+      if (d !== todayIst && d !== todayUtc) {
+        const err = new Error("session_expired_day_change");
+        err.code = "DAY_CHANGED";
+        err.detail = `Token day=${d}, todayIst=${todayIst}, todayUtc=${todayUtc}`;
+        throw err;
+      }
+    }
+
+    return payload;
+  } catch (e) {
+    const msg = String(e?.message || e);
+
+    // Preserve common error mapping
+    if (e?.name === "TokenExpiredError" || /jwt expired/i.test(msg)) {
+      const err = new Error("jwt_expired");
+      err.code = "JWT_EXPIRED";
+      err.detail = msg;
+      throw err;
+    }
+
+    if (e?.name === "JsonWebTokenError" && /invalid signature/i.test(msg)) {
+      const err = new Error("invalid_signature");
+      err.code = "INVALID_SIGNATURE";
+      err.detail = msg;
+      throw err;
+    }
+
+    if (/issuer invalid/i.test(msg) || /audience invalid/i.test(msg)) {
+      const err = new Error("issuer_or_audience_mismatch");
+      err.code = "ISS_AUD_MISMATCH";
+      err.detail = msg;
+      throw err;
+    }
+
+    const err = new Error("jwt_verify_failed");
+    err.code = "JWT_VERIFY_FAILED";
+    err.detail = msg;
+    throw err;
+  }
+}
+
+// CMD-F ANCHOR: digi-jwt-verify
+
+function getDigiPublicKeyPem() {
+  if (DIGI_AUTH_PUBLIC_KEY && String(DIGI_AUTH_PUBLIC_KEY).trim()) {
+    return String(DIGI_AUTH_PUBLIC_KEY)
+      .trim()
+      .replace(/^"(.*)"$/, "$1")
+      .replace(/\\n/g, "\n");
+  }
+
+  if (DIGI_AUTH_PUBLIC_KEY_FILE && fs.existsSync(DIGI_AUTH_PUBLIC_KEY_FILE)) {
+    return fs.readFileSync(String(DIGI_AUTH_PUBLIC_KEY_FILE).trim(), "utf8");
+  }
+
+  // last-resort fallback (keeps prod alive, but warns loudly)
+  if (fs.existsSync(path.join(__dirname, "keys", "auth-public.pem"))) {
+    console.warn(
+      "⚠️ DIGI key not configured. Falling back to keys/auth-public.pem. " +
+        "If Digi uses a different signer key, SSO will FAIL until you set DIGI_AUTH_PUBLIC_KEY(_FILE)."
+    );
+    return fs.readFileSync(
+      path.join(__dirname, "keys", "auth-public.pem"),
+      "utf8"
+    );
+  }
+
   throw new Error(
     "DIGI_AUTH_PUBLIC_KEY or DIGI_AUTH_PUBLIC_KEY_FILE not configured"
   );
 }
 
-function verifySsoJwt(token) {
-  if (!token) throw new Error("Missing SSO token");
-
-  const pub = getDigiPublicKeyPem();
-
-  const payload = jwt.verify(token, pub, {
-    algorithms: ["RS256"],
-    issuer: DIGI_ISSUER,
-    audience: DIGI_AUDIENCE,
-  });
-
-  // Enforce IST midnight logout (Digi includes payload.day)
-  if (!payload?.day || payload.day !== currentIstDay()) {
-    throw new Error("session_expired_day_change");
-  }
-
-  return payload;
+function currentUtcDay() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
 
-function hasAuditAppAccess(payload) {
-  const apps = payload?.apps;
-  if (!Array.isArray(apps)) return true; // if older token without apps, don't hard-break
-  return apps.includes("audit");
+function currentIstDay() {
+  const IST_OFFSET_MS = 330 * 60 * 1000; // +05:30
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-function getSsoTokenFromReq(req) {
-  // Prefer cookie
-  const c = req.cookies?.[SSO_COOKIE_NAME];
-  if (c) return String(c);
+function _issuerVariants(v) {
+  const raw = String(v || "").trim();
+  if (!raw) return [];
+  const noScheme = raw.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  const withHttps = `https://${noScheme}`;
+  const withHttp = `http://${noScheme}`;
+  return Array.from(
+    new Set([
+      raw,
+      noScheme,
+      withHttps,
+      withHttp,
+      `${withHttps}/`,
+      `${noScheme}/`,
+    ])
+  );
+}
 
-  // Optional: allow bearer
-  const auth = String(req.headers.authorization || "");
-  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
-
-  return "";
+function _audVariants(v) {
+  const raw = String(v || "").trim();
+  if (!raw) return [];
+  // allow comma/space separated
+  const parts = raw
+    .split(/[,\s;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return Array.from(new Set(parts));
 }
 
 function extractEmailFromSsoPayload(payload) {
-  // Be flexible: Digi might store email under different claims
   const cand = [
     payload?.email,
+    payload?.mail,
     payload?.upn,
     payload?.preferred_username,
-    payload?.username,
     payload?.unique_name,
+    payload?.username,
     payload?.sub,
   ]
     .map((x) =>
@@ -734,10 +1228,14 @@ function extractEmailFromSsoPayload(payload) {
         .trim()
         .toLowerCase()
     )
-    .find(Boolean);
+    .filter(Boolean);
 
-  return cand || "";
+  // only accept a real email
+  const email = cand.find((x) => x.includes("@"));
+  return email || "";
 }
+
+// Accept either DIGI_SSO_COOKIE_NAME or common alternates (helps when Digi changes cookie name)
 
 // Validate that all provided emails exist in EMP (ActiveFlag=1)
 async function findMissingEmployees(rawList) {
@@ -773,7 +1271,7 @@ const STATIC_AUDITORS = [
   "santosh.kumar@protivitiglobal.in",
   "borra.prasanna@protivitiglobal.in",
   "aman.shah@protivitiglobal.in",
-  "aarnav.singh@premierenergies.com",
+  "aarnavsingh836@gmail.com",
 ];
 
 // ✅ Special viewer who should see ALL issues in MyDashboard
@@ -835,18 +1333,71 @@ async function isGlobalAuditor(email) {
   return dyn.some((r) => r.email === em && processesMatch(r.processes, "*"));
 }
 
-async function isAuditorEmail(email, processOpt = null) {
-  const em = String(email || "").toLowerCase();
+// CMD-F ANCHOR: auditor-check-logic
+// CMD-F ANCHOR: auditor-check-logic
+async function isAuditorEmail(email) {
+  const em = String(email || "")
+    .trim()
+    .toLowerCase();
   if (!em) return false;
-  const statics = getStaticAuditors();
-  if (statics.includes(em)) return true;
-  const dyn = await listAuditorsFromDb();
-  if (!processOpt) return dyn.some((r) => r.email === em); // any DB row qualifies as "auditor"
-  return dyn.some(
-    (r) => r.email === em && processesMatch(r.processes, processOpt)
-  );
+
+  // ✅ Respect env/static allowlists first
+  if (getStaticAuditors().includes(em)) return true;
+
+  // ✅ Then allow anyone present in dbo.Auditors
+  try {
+    const rs = await auditPool
+      .request()
+      .input("email", sql.NVarChar, em)
+      .query("SELECT TOP 1 id FROM dbo.Auditors WHERE email = @email");
+    return (rs.recordset?.length || 0) > 0;
+  } catch (e) {
+    console.error("isAuditorEmail check failed:", e);
+    return false;
+  }
+}
+// CMD-F ANCHOR: auditor-check-logic
+
+async function isApproverEmail(email) {
+  if (!email) return false;
+  try {
+    // Check if user is listed as an 'approver' in any Audit Issue
+    const rs = await auditPool
+      .request()
+      .input("email", sql.NVarChar, email.toLowerCase())
+      .query(
+        "SELECT TOP 1 id FROM dbo.AuditIssues WHERE approver LIKE '%' + @email + '%'"
+      );
+    return rs.recordset.length > 0;
+  } catch (e) {
+    return false;
+  }
 }
 
+async function isApproverEmail(email) {
+  const em = String(email || "").toLowerCase();
+  if (!em) return false;
+
+  // Special viewer is treated as an approver so they land on MyDashboard
+  if (isSpecialAllViewer(em)) return true;
+
+  try {
+    // Check if the email appears in any role-based column in AuditIssues
+    const res = await auditPool
+      .request()
+      .input("email", sql.NVarChar, `%${em}%`).query(`
+        SELECT TOP 1 1 FROM dbo.AuditIssues 
+        WHERE approver LIKE @email 
+           OR personResponsible LIKE @email 
+           OR coOwner LIKE @email 
+           OR cxoResponsible LIKE @email
+      `);
+    return (res.recordset?.length || 0) > 0;
+  } catch (e) {
+    return false;
+  }
+}
+// CMD-F ANCHOR: auditor-check-logic
 async function getAuditorsForProcess(procOpt = null) {
   const out = new Set(getStaticAuditors());
   const dyn = await listAuditorsFromDb();
@@ -1337,62 +1888,177 @@ app.delete("/api/auditors/:id", async (req, res) => {
 });
 
 // SSO login: if Digi session cookie is present & valid, return same shape as /api/verify-otp
-// SSO login: if Digi session cookie is present & valid, return identity
-app.post("/api/sso/login", async (req, res) => {
+async function ssoLoginHandler(req, res) {
   try {
     const token = getSsoTokenFromReq(req);
+    if (!token) {
+      // ✅ If OTP session exists, treat as logged in (so page load doesn't break)
+      const sess = readCamSession(req);
+      if (sess?.email) {
+        return res.json({
+          authenticated: true,
+          mode: "otp",
+          message: "OTP session active",
+          email: sess.email,
+          empID: null,
+          empName: sess.email,
+        });
+      }
+
+      // ✅ No SSO cookie and no OTP session: return 200 (not 401) so UI can show login page cleanly
+      return res.status(200).json({
+        authenticated: false,
+        message: "No Digi SSO cookie found. Please login via Digi.",
+        code: "NO_SSO_COOKIE",
+        redirectUrl: buildDigiRedirectUrl(""),
+      });
+    }
     const payload = verifySsoJwt(token);
 
-    const email = extractEmailFromSsoPayload(payload);
-
-    if (!email || !email.endsWith(INTERNAL_DOMAIN)) {
-      return res.status(401).json({ message: "No valid internal SSO session" });
-    }
-
-    // Enforce Digi portal app access (user must have "audit" enabled in Digi)
     if (!hasAuditAppAccess(payload)) {
       return res.status(403).json({
-        message:
-          "You do not have access to Audit in Digi Portal. Contact admin.",
-        noAuditAccess: true,
+        message: "You do not have access to CAM/Audit in Digi apps list.",
+        forbidden: true,
       });
     }
 
-    // Optional EMP enrichment
+    const email = extractEmailFromSsoPayload(payload);
+    if (!email) {
+      return res.status(200).json({
+        authenticated: false,
+        message: "SSO token has no email/username claim.",
+        invalidToken: true,
+        redirectUrl: buildDigiRedirectUrl(""),
+      });
+    }
+
+    // (Optional but recommended) SSO should be internal only
+    if (!isInternalEmployeeEmail(email)) {
+      return res.status(403).json({
+        message: "SSO login is only for internal users.",
+        forbidden: true,
+      });
+    }
+
+    // Pull EMP name/id for UX (safe even if EMP doesn’t have the row)
     let empID = null;
     let empName = email;
 
     try {
-      const empQ = await spotPool
-        .request()
-        .input("em", sql.NVarChar(255), email).query(`
+      const rs = await spotPool.request().input("em", sql.NVarChar(255), email)
+        .query(`
           SELECT TOP 1 EmpID, EmpName
           FROM dbo.EMP
-          WHERE LOWER(EmpEmail) = LOWER(@em) AND ActiveFlag = 1
+          WHERE LOWER(EmpEmail) = LOWER(@em)
+            AND (ActiveFlag = 1 OR ActiveFlag IS NULL)
         `);
 
-      if (empQ.recordset?.length) {
-        empID = String(empQ.recordset[0].EmpID ?? "");
-        empName = empQ.recordset[0].EmpName || email;
+      if (rs.recordset?.length) {
+        empID = rs.recordset[0].EmpID ?? null;
+        empName = rs.recordset[0].EmpName || empName;
       }
     } catch (e) {
-      console.warn("SSO EMP lookup warning:", e?.message || e);
+      // don’t fail login because EMP lookup failed
+      console.warn("SSO EMP lookup failed:", e?.message || e);
+    }
+
+    // Return same “shape” vibe as /api/verify-otp (plus email)
+    return res.json({
+      authenticated: true,
+      mode: "sso",
+      message: "SSO login successful",
+      email,
+      empID,
+      empName,
+    });
+  } catch (err) {
+    const msg = String(err?.message || "SSO verification failed");
+
+    // If you throw this string in verifySsoJwt() when day changed
+    if (msg === "session_expired_day_change") {
+      return res.status(200).json({
+        authenticated: false,
+        message: "Session expired (day changed). Please login again via Digi.",
+        code: msg,
+        redirectUrl: buildDigiRedirectUrl(""),
+      });
     }
 
     return res.status(200).json({
-      message: "SSO verified successfully",
-      empID,
-      empName,
-      email,
-      apps: Array.isArray(payload.apps) ? payload.apps : [],
-      roles: Array.isArray(payload.roles) ? payload.roles : [],
+      authenticated: false,
+      message: "Invalid Digi session. Please login again.",
+      error: msg,
+      redirectUrl: buildDigiRedirectUrl(""),
+    });
+  }
+}
+
+// CMD-F ANCHOR: sso-bootstrap-local
+app.get("/api/sso/bootstrap", async (req, res) => {
+  try {
+    // 0) If local CAM session already exists, you're authenticated
+    const sess = readCamSession(req);
+    if (sess?.email) {
+      return res.json({
+        authenticated: true,
+        mode: sess.mode || "otp",
+        email: sess.email,
+      });
+    }
+
+    // 1) If Digi SSO cookie exists, verify locally and mint CAM session
+    const ssoTok = getSsoTokenFromReq(req);
+    if (ssoTok) {
+      const payload = verifySsoJwt(ssoTok);
+
+      if (!hasAuditAppAccess(payload)) {
+        return res.status(200).json({
+          authenticated: false,
+          forbidden: true,
+          message: "No access to CAM/Audit in Digi apps list.",
+        });
+      }
+
+      const email = extractEmailFromSsoPayload(payload);
+      if (!email || !isInternalEmployeeEmail(email)) {
+        return res.status(200).json({
+          authenticated: false,
+          message: "Invalid SSO user.",
+          redirectUrl: buildDigiRedirectUrl(""),
+        });
+      }
+
+      setCamSession(res, {
+        email: email.toLowerCase(),
+        mode: "sso",
+        day: currentIstDay(),
+      });
+
+      return res.json({
+        authenticated: true,
+        mode: "sso",
+        email: email.toLowerCase(),
+      });
+    }
+
+    // 2) No session at all
+    return res.json({
+      authenticated: false,
+      redirectUrl: buildDigiRedirectUrl(""),
     });
   } catch (err) {
-    const msg = err?.message || "SSO verification failed";
-    console.warn("SSO login failed:", msg);
-    return res.status(401).json({ message: msg });
+    const msg = String(err?.message || err);
+    console.error("SSO Bootstrap failed:", msg);
+    return res.json({
+      authenticated: false,
+      error: msg,
+      redirectUrl: buildDigiRedirectUrl(""),
+    });
   }
 });
+
+app.post("/api/sso/login", ssoLoginHandler);
+app.get("/api/sso/login", ssoLoginHandler);
 
 /* ======================= OTP AUTH (SPOT: EMP + OTPs) ======================= */
 
@@ -1536,8 +2202,16 @@ app.post("/api/verify-otp", async (req, res) => {
       `);
     const empName = emp.recordset.length ? emp.recordset[0].EmpName : fullEmail;
 
+    // Create OTP session (so /api/session works)
+    setCamSession(res, {
+      email: fullEmail.toLowerCase(),
+      mode: "otp",
+      day: currentIstDay(), // optional, matches your day policy pattern
+    });
+
     res.status(200).json({
       message: "OTP verified successfully",
+      email: fullEmail.toLowerCase(),
       empID: row.LEmpID,
       empName,
     });
@@ -1596,6 +2270,132 @@ app.get("/api/resolve-role", async (req, res) => {
     return res.json({ role: "user" });
   }
 });
+
+// CMD-F ANCHOR: session-combined
+app.get("/api/session", async (req, res) => {
+  try {
+    // 0) Prefer local CAM session (created by OTP or by SSO bootstrap)
+    const sess = readCamSession(req);
+    if (sess?.email) {
+      // If session already has emp fields, keep them; else enrich from EMP
+      let empID = sess.empID ?? null;
+      let empName = sess.empName ?? sess.email;
+
+      if (!empID || !empName || empName === sess.email) {
+        const emp = await lookupEmpByEmail(sess.email);
+        empID = emp.empID;
+        empName = emp.empName || empName;
+
+        // Optional: re-mint cookie so future calls don’t re-query EMP
+        setCamSession(res, {
+          email: String(sess.email).toLowerCase(),
+          mode: sess.mode || "otp",
+          day: sess.day || currentIstDay(),
+          empID,
+          empName,
+        });
+      }
+
+      return res.json({
+        authenticated: true,
+        mode: sess.mode || "otp",
+        message: "Session active",
+        email: String(sess.email).toLowerCase(),
+        empID,
+        empName,
+
+        // optional aliases (helps if FE expects different casing)
+        empId: empID,
+        name: empName,
+      });
+    }
+
+    // 1) If Digi SSO cookie exists, verify and ALSO mint local CAM session
+    const ssoTok = getSsoTokenFromReq(req);
+    if (ssoTok) {
+      const payload = verifySsoJwt(ssoTok);
+
+      if (!hasAuditAppAccess(payload)) {
+        return res.status(403).json({
+          authenticated: false,
+          forbidden: true,
+          message: "No access to CAM/Audit in Digi apps list.",
+        });
+      }
+
+      const email = extractEmailFromSsoPayload(payload);
+      if (!email) {
+        return res.status(200).json({
+          authenticated: false,
+          message: "SSO token has no email claim.",
+          redirectUrl: buildDigiRedirectUrl(""),
+        });
+      }
+
+      if (!isInternalEmployeeEmail(email)) {
+        return res.status(403).json({
+          authenticated: false,
+          forbidden: true,
+          message: "SSO login is only for internal users.",
+        });
+      }
+
+      const emLower = String(email).toLowerCase();
+      const emp = await lookupEmpByEmail(emLower);
+
+      // Mint local CAM session (now includes empID/empName)
+      setCamSession(res, {
+        email: emLower,
+        mode: "sso",
+        day: currentIstDay(),
+        empID: emp.empID,
+        empName: emp.empName || emLower,
+      });
+
+      return res.json({
+        authenticated: true,
+        mode: "sso",
+        message: "SSO session active",
+        email: emLower,
+        empID: emp.empID,
+        empName: emp.empName || emLower,
+
+        // optional aliases
+        empId: emp.empID,
+        name: emp.empName || emLower,
+      });
+    }
+
+    // 2) No SSO and no OTP session -> return 200 so UI can decide cleanly
+    return res.status(200).json({
+      authenticated: false,
+      message: "No active session",
+      code: "NO_SESSION",
+      redirectUrl: buildDigiRedirectUrl(""),
+    });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    const detail = String(err?.detail || msg);
+    const debug =
+      process.env.SSO_DEBUG === "1" || process.env.NODE_ENV !== "production";
+
+    return res.status(200).json({
+      authenticated: false,
+      message: "Session check failed. Please login again.",
+      error: msg,
+      ...(debug ? { detail } : {}),
+      redirectUrl: buildDigiRedirectUrl(""),
+    });
+  }
+});
+// CMD-F ANCHOR: session-combined
+
+app.post("/api/logout", (req, res) => {
+  clearCamSession(res);
+  // optionally also clear sso cookies if you ever set them here (usually Digi owns them)
+  return res.json({ success: true });
+});
+// CMD-F ANCHOR: session-combined
 
 /* ----------------------- CREATE (single, from UI modal) --------------------- */
 app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
@@ -1668,7 +2468,7 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
         cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
         reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
     `;
 
     const fiscalYear = body.fiscalYear || "";
@@ -2173,7 +2973,7 @@ app.post(
         cxoResponsible, coOwner, timeline, currentStatus, evidenceReceived,
         reviewComments, risk, actionRequired, startMonth, endMonth, annexure, createdAt, updatedAt
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
     `;
 
       let successCount = 0;
@@ -3039,6 +3839,36 @@ async function notifyPendingHandler(req, res) {
 // Wire up both verbs so a plain browser GET works too
 app.post("/api/audit-issues/notify-pending", notifyPendingHandler);
 app.get("/api/audit-issues/notify-pending", notifyPendingHandler);
+
+// CMD-F ANCHOR: sso-debug
+app.get("/api/sso/debug", (req, res) => {
+  if (process.env.NODE_ENV === "production") return res.status(404).end();
+
+  const token = getSsoTokenFromReq(req);
+  const clean = String(token || "")
+    .trim()
+    .replace(/^bearer\s+/i, "");
+  const decoded = clean ? jwt.decode(clean, { complete: true }) : null;
+
+  res.json({
+    hasToken: !!clean,
+    cookieNames: Object.keys(req.cookies || {}),
+    jwtHeader: decoded?.header || null,
+    jwtClaims: decoded
+      ? {
+          iss: decoded.payload?.iss,
+          aud: decoded.payload?.aud,
+          day: decoded.payload?.day,
+          email:
+            decoded.payload?.email ||
+            decoded.payload?.upn ||
+            decoded.payload?.preferred_username ||
+            decoded.payload?.unique_name ||
+            decoded.payload?.sub,
+        }
+      : null,
+  });
+});
 
 /* --------------------------- Auditor review (PUT) --------------------------- */
 app.put("/api/audit-issues/:id/review", async (req, res) => {

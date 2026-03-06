@@ -17,6 +17,43 @@ export const Login: React.FC = () => {
   const [otpSent, setOtpSent] = useState(false);
 
   const { login, sendOtp, verifyOtp } = useAuth();
+  const navigate = useNavigate();
+
+  // ✅ On first load, check /api/session (NOT /api/sso/login)
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/session", {
+          method: "GET",
+          credentials: "include", // ✅ critical: send cookies
+          headers: { Accept: "application/json" },
+        });
+
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const loggedIn = !!(
+          (
+            data?.loggedIn || // legacy style
+            data?.authenticated || // new style
+            data?.email
+          ) // fallback
+        );
+
+        if (loggedIn && !cancelled) {
+          navigate("/", { replace: true }); // change if your post-login route differs
+        }
+      } catch {
+        // ignore - user will see login form
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
 
   // Only this email retains password login (auditor hardcoded)
   // Auditors now use OTP too
@@ -34,6 +71,7 @@ export const Login: React.FC = () => {
           title: "Login Successful",
           description: "Welcome to Audit @Premier Energies",
         });
+        navigate("/", { replace: true });
       } else {
         toast({
           title: "Login Failed",
@@ -45,8 +83,8 @@ export const Login: React.FC = () => {
     }, 800);
   };
 
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSendOtp = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault?.();
     setIsLoading(true);
     try {
       const ok = await sendOtp(email);
@@ -88,6 +126,8 @@ export const Login: React.FC = () => {
           title: "Login Successful",
           description: "Welcome to Audit @Premier Energies",
         });
+                // ✅ after OTP, backend sets cookie -> session is now valid
+        navigate("/", { replace: true });
       } else {
         toast({
           title: "Invalid or expired OTP",
@@ -145,11 +185,7 @@ export const Login: React.FC = () => {
                   required
                 />
               </div>
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={isLoading}
-              >
+              <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Signing in..." : "Sign In"}
               </Button>
             </form>

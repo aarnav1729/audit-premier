@@ -14,7 +14,16 @@ import { MyDashboard } from "@/pages/MyDashboard";
 const queryClient = new QueryClient();
 
 const AppContent = () => {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, ready } = useAuth();
+
+  // ✅ Don't render Login until session bootstrap finishes
+  if (!ready) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        Loading...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Login />;
@@ -47,7 +56,15 @@ const AppContent = () => {
  * Mirrors AppContent's auth + layout so behavior is consistent.
  */
 const MyRoute = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, ready } = useAuth();
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        Loading...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Login />;

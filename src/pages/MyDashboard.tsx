@@ -387,9 +387,49 @@ export const MyDashboard: React.FC = () => {
   if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
+    <div className="space-y-6">
+      <section className="overflow-hidden rounded-[32px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(15,23,42,0.96),rgba(30,41,59,0.9)_38%,rgba(14,116,144,0.82))] px-6 py-8 text-white shadow-[0_32px_80px_-48px_rgba(15,23,42,0.85)] sm:px-8">
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+          <div className="max-w-3xl space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/65">
+              Personal workspace
+            </p>
+            <h1 className="text-4xl font-semibold tracking-tight">
+              Work each assigned audit issue from one place.
+            </h1>
+            <p className="max-w-2xl text-sm text-white/70">
+              Review your pending observations, upload evidence faster, and keep
+              comments visible for approvers, CXOs, and special viewers.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
+                Issues in scope
+              </p>
+              <p className="mt-2 text-3xl font-semibold">{displayedIssues.length}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
+                Active roles
+              </p>
+              <p className="mt-2 text-3xl font-semibold">{myRoles.length || 1}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
+                Viewer mode
+              </p>
+              <p className="mt-2 text-lg font-semibold">
+                {isSpecialAllViewer ? "All issues" : "Assigned only"}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <Tabs defaultValue="analytics" className="space-y-4">
-        <TabsList className="grid w-fit grid-cols-2">
+        <TabsList className="grid w-full max-w-md grid-cols-2 rounded-2xl bg-white/85 p-1 shadow-sm">
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
           <TabsTrigger value="my-issues">
             {isSpecialAllViewer ? "All Issues" : "My Issues"}
@@ -409,11 +449,27 @@ export const MyDashboard: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="my-issues" className="space-y-4">
-          <Card className="w-full">
-            <CardHeader>
-              <CardTitle className="text-xl font-semibold">
-                Welcome back to CAM {user?.name || me}!
+          <Card className="overflow-hidden rounded-[28px] border-slate-200/80 bg-white/85">
+            <CardHeader className="border-b border-slate-100 bg-slate-50/80">
+              <CardTitle className="text-2xl font-semibold text-slate-950">
+                {user?.name || me}
               </CardTitle>
+              <div className="flex flex-wrap gap-2 pt-2">
+                {myRoles.length > 0 ? (
+                  myRoles.map((role) => (
+                    <Badge
+                      key={role}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+                    >
+                      {role}
+                    </Badge>
+                  ))
+                ) : (
+                  <Badge className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700">
+                    Viewer
+                  </Badge>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               {/* ✅ Extra Overdue filter for Manoj */}

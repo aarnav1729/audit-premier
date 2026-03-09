@@ -5,10 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { Login } from "@/components/Login";
-import Navbar from "@/components/Navbar";
+import AppShell from "@/components/AppShell";
 import { AuditorDashboard } from "@/pages/AuditorDashboard";
-import { UserDashboard } from "@/pages/UserDashboard";
-import { ApproverDashboard } from "@/pages/ApproverDashboard";
 import { MyDashboard } from "@/pages/MyDashboard";
 
 const queryClient = new QueryClient();
@@ -44,10 +42,7 @@ const AppContent = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Navbar />
-      <main className="flex-1">{getDashboardComponent()}</main>
-    </div>
+    <AppShell>{getDashboardComponent()}</AppShell>
   );
 };
 
@@ -55,8 +50,14 @@ const AppContent = () => {
  * Route wrapper for the unified, capability-stacking dashboard at /my.
  * Mirrors AppContent's auth + layout so behavior is consistent.
  */
-const MyRoute = () => {
-  const { isAuthenticated, ready } = useAuth();
+const ProtectedRoute = ({
+  children,
+  requireAuditor = false,
+}: {
+  children: React.ReactNode;
+  requireAuditor?: boolean;
+}) => {
+  const { isAuthenticated, ready, user } = useAuth();
 
   if (!ready) {
     return (
@@ -70,14 +71,11 @@ const MyRoute = () => {
     return <Login />;
   }
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <Navbar />
-      <main className="flex-1">
-        <MyDashboard />
-      </main>
-    </div>
-  );
+  if (requireAuditor && user?.role !== "auditor") {
+    return <Navigate to="/my" replace />;
+  }
+
+  return <AppShell>{children}</AppShell>;
 };
 
 const App = () => (
@@ -88,9 +86,24 @@ const App = () => (
       <AuthProvider>
         <BrowserRouter>
           <Routes>
-            {/* Unified dashboard path */}
-            <Route path="/my" element={<MyRoute />} />
-            {/* Fallback to role-based AppContent for all other paths */}
+            <Route path="/" element={<AppContent />} />
+            <Route
+              path="/my"
+              element={
+                <ProtectedRoute>
+                  <MyDashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/my-dashboard" element={<Navigate to="/my" replace />} />
+            <Route
+              path="/auditor-dashboard"
+              element={
+                <ProtectedRoute requireAuditor>
+                  <AuditorDashboard />
+                </ProtectedRoute>
+              }
+            />
             <Route path="*" element={<AppContent />} />
           </Routes>
         </BrowserRouter>

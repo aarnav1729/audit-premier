@@ -1,150 +1,270 @@
-import React, { useEffect, useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/hooks/useAuth";
-import { LogOut, User, Bell } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
-import Notification from "@/components/Notification";
-import logo from "./logo.png";
+  Shield,
+  LogOut,
+  User,
+  Menu,
+  X,
+  LayoutDashboard,
+  Bell,
+  ChevronDown,
+  Settings,
+} from "lucide-react";
+import { toast } from "sonner";
 
-const API_BASE_URL = `${window.location.origin}/api`;
+interface NavbarProps {
+  userRole?: string;
+  userName?: string;
+  userEmail?: string;
+}
 
-// split a semicolon/comma list into lowercased tokens
-const splitEmails = (s?: string) =>
-  String(s || "")
-    .toLowerCase()
-    .split(/[;,]\s*/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+const Navbar = ({ userRole, userName, userEmail }: NavbarProps) => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [scrolled, setScrolled] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-export const Navbar: React.FC = () => {
-  const { user, logout } = useAuth();
-
-  // Roles derived from RBAC across issues the user is part of
-  const [rbacRoles, setRbacRoles] = useState<string[]>([]);
-
+  // Scroll-aware header
   useEffect(() => {
-    let active = true;
-    const loadRoles = async () => {
-      try {
-        const me = (user?.email || "").toLowerCase();
-        if (!me) {
-          if (active) setRbacRoles([]);
-          return;
-        }
-        const url = new URL(`${API_BASE_URL}/audit-issues`);
-        url.searchParams.set("viewer", me);
-        const res = await fetch(url.toString());
-        if (!res.ok) {
-          if (active) setRbacRoles([]);
-          return;
-        }
-        const issues: any[] = await res.json();
-        const seen = new Set<string>();
-        for (const i of issues) {
-          if (splitEmails(i.cxoResponsible).includes(me)) seen.add("CXO");
-          if (splitEmails(i.approver).includes(me)) seen.add("Approver");
-          if (splitEmails(i.personResponsible).includes(me))
-            seen.add("Person Responsible");
-        }
-        const ordered = ["CXO", "Approver", "Person Responsible"].filter((r) =>
-          seen.has(r)
-        );
-        if (active) setRbacRoles(ordered);
-      } catch {
-        if (active) setRbacRoles([]);
-      }
-    };
-    loadRoles();
-    return () => {
-      active = false;
-    };
-  }, [user?.email]);
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
-  const getBadgeColor = (label: string) => {
-    switch (label) {
-      case "AUDITOR":
-        return "bg-blue-500";
-      case "CXO":
-        return "bg-amber-600";
-      case "Approver":
-        return "bg-purple-500";
-      case "Person Responsible":
-        return "bg-green-600";
-      default:
-        return "bg-gray-500";
-    }
-  };
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    toast.success("Signed out successfully");
+    navigate("/");
+  }, [navigate]);
+
+  const isAuditor = userRole === "auditor" || userRole === "admin";
+  const displayName = userName || userEmail?.split("@")[0] || "User";
+  const initials = displayName
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  const navLinks = [
+    ...(isAuditor
+      ? [
+          {
+            label: "Audit Dashboard",
+            path: "/auditor-dashboard",
+            icon: Shield,
+          },
+        ]
+      : []),
+    {
+      label: "My Dashboard",
+      path: "/my-dashboard",
+      icon: LayoutDashboard,
+    },
+  ];
+
+  const isActive = (path: string) => location.pathname === path;
 
   return (
-    <nav className="bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center">
-          <img src={logo} alt="CAM logo" className="h-24 md:h-16 w-auto" />
-        </div>
-
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2">
-            <User className="h-4 w-4 text-gray-500" />
-            <span className="text-sm font-medium text-gray-700">
-              {user?.name}
-            </span>
-            {/* Always show AUDITOR badge if applicable */}
-            {(user?.role || "").toLowerCase() === "auditor" && (
-              <Badge className={`${getBadgeColor("AUDITOR")} text-white`}>
-                AUDITOR
-              </Badge>
-            )}
-            {/* RBAC-derived roles across at least one issue */}
-            {rbacRoles.map((r) => (
-              <Badge key={r} className={`${getBadgeColor(r)} text-white`}>
-                {r}
-              </Badge>
-            ))}
+    <header
+      className={`
+        fixed top-0 left-0 right-0 z-50 h-[4.5rem]
+        transition-all duration-300 ease-out
+        ${
+          scrolled
+            ? "cam-frosted border-b shadow-sm"
+            : "bg-transparent border-b border-transparent"
+        }
+      `}
+    >
+      <div className="cam-container h-full flex items-center justify-between">
+        {/* ── Logo ── */}
+        <button
+          onClick={() =>
+            navigate(isAuditor ? "/auditor-dashboard" : "/my-dashboard")
+          }
+          className="flex items-center gap-3 group"
+        >
+          <div className="relative flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-[hsl(var(--primary))] to-[hsl(var(--accent))] text-white shadow-md group-hover:shadow-lg transition-shadow">
+            <Shield className="w-[18px] h-[18px]" />
           </div>
+          <div className="hidden sm:block">
+            <span className="text-lg font-bold tracking-tight text-foreground">
+              CAM
+            </span>
+            <span className="hidden md:inline text-xs text-muted-foreground ml-2 font-medium">
+              Audit Management
+            </span>
+          </div>
+        </button>
 
-          {/* Notifications bell -> right-side drawer with Notification feed */}
-          <Sheet>
-            <SheetTrigger asChild>
+        {/* ── Desktop Nav Links ── */}
+        <nav className="hidden md:flex items-center gap-1">
+          {navLinks.map(({ label, path, icon: Icon }) => (
+            <button
+              key={path}
+              onClick={() => navigate(path)}
+              className={`
+                relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                transition-all duration-200
+                ${
+                  isActive(path)
+                    ? "text-primary bg-primary/8"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                }
+              `}
+            >
+              <Icon className="w-4 h-4" />
+              {label}
+              {isActive(path) && (
+                <span className="absolute bottom-0 left-3 right-3 h-0.5 bg-primary rounded-full" />
+              )}
+            </button>
+          ))}
+        </nav>
+
+        {/* ── Right Section ── */}
+        <div className="flex items-center gap-2">
+          {/* Notification bell */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative rounded-lg text-muted-foreground hover:text-foreground"
+          >
+            <Bell className="w-[18px] h-[18px]" />
+          </Button>
+
+          {/* User menu */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
-                size="icon"
-                className="relative"
-                aria-label="Open notifications"
-                title="Notifications"
+                className="flex items-center gap-2.5 px-2 py-1.5 h-auto rounded-xl hover:bg-muted/60"
               >
-                <Bell className="h-5 w-5 text-gray-700" />
-                {/* (Optional) small dot for attention — remove if undesired */}
-                {/* <span className="absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full bg-blue-600" /> */}
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary/90 to-primary flex items-center justify-center text-primary-foreground text-xs font-bold shadow-sm">
+                  {initials}
+                </div>
+                <div className="hidden lg:block text-left">
+                  <p className="text-sm font-semibold leading-none text-foreground">
+                    {displayName}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground leading-tight mt-0.5">
+                    {userRole || "User"}
+                  </p>
+                </div>
+                <ChevronDown className="hidden lg:block w-3.5 h-3.5 text-muted-foreground" />
               </Button>
-            </SheetTrigger>
-            <SheetContent side="right" className="w-full sm:max-w-xl p-0">
-              <SheetHeader className="border-b px-4 py-3">
-                <SheetTitle className="text-base">Notifications</SheetTitle>
-              </SheetHeader>
-              <div className="h-[calc(100vh-3.25rem)] overflow-y-auto p-4">
-                <Notification />
-              </div>
-            </SheetContent>
-          </Sheet>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="w-56 rounded-xl shadow-lg border animate-in fade-in-0 zoom-in-95"
+            >
+              <DropdownMenuLabel className="font-normal py-3">
+                <p className="text-sm font-semibold">{displayName}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {userEmail}
+                </p>
+                {userRole && (
+                  <Badge
+                    variant="secondary"
+                    className="mt-2 text-[10px] uppercase tracking-wider font-bold"
+                  >
+                    {userRole}
+                  </Badge>
+                )}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => navigate("/my-dashboard")}
+                className="cursor-pointer gap-2 py-2"
+              >
+                <User className="w-4 h-4" />
+                My Dashboard
+              </DropdownMenuItem>
+              {isAuditor && (
+                <DropdownMenuItem
+                  onClick={() => navigate("/auditor-dashboard")}
+                  className="cursor-pointer gap-2 py-2"
+                >
+                  <Shield className="w-4 h-4" />
+                  Audit Dashboard
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem className="cursor-pointer gap-2 py-2">
+                <Settings className="w-4 h-4" />
+                Settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="cursor-pointer gap-2 py-2 text-destructive focus:text-destructive"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign Out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
+          {/* Mobile hamburger */}
           <Button
-            variant="outline"
-            size="sm"
-            onClick={logout}
-            className="flex items-center space-x-2"
+            variant="ghost"
+            size="icon"
+            className="md:hidden rounded-lg"
+            onClick={() => setMobileOpen(!mobileOpen)}
           >
-            <LogOut className="h-4 w-4" />
-            <span>Logout</span>
+            {mobileOpen ? (
+              <X className="w-5 h-5" />
+            ) : (
+              <Menu className="w-5 h-5" />
+            )}
           </Button>
         </div>
       </div>
-    </nav>
+
+      {/* ── Mobile Menu ── */}
+      {mobileOpen && (
+        <div className="md:hidden absolute top-full left-0 right-0 cam-frosted border-b shadow-lg">
+          <div className="cam-container py-3 flex flex-col gap-1">
+            {navLinks.map(({ label, path, icon: Icon }) => (
+              <button
+                key={path}
+                onClick={() => navigate(path)}
+                className={`
+                  flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium
+                  transition-colors
+                  ${
+                    isActive(path)
+                      ? "text-primary bg-primary/8"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                  }
+                `}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </header>
   );
 };
+
+export default Navbar;

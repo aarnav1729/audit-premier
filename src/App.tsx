@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { Login } from "@/components/Login";
-import { Navbar } from "@/components/Navbar";
+import Navbar from "@/components/Navbar";
 import { AuditorDashboard } from "@/pages/AuditorDashboard";
 import { UserDashboard } from "@/pages/UserDashboard";
 import { ApproverDashboard } from "@/pages/ApproverDashboard";

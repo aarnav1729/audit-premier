@@ -308,47 +308,6 @@ export const AuditorDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <section className="overflow-hidden rounded-[32px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(15,23,42,0.98),rgba(30,41,59,0.94)_35%,rgba(37,99,235,0.9))] px-6 py-8 text-white shadow-[0_32px_80px_-48px_rgba(15,23,42,0.85)] sm:px-8">
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
-          <div className="max-w-3xl space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/65">
-              Audit control center
-            </p>
-            <h1 className="text-4xl font-semibold tracking-tight">
-              Review evidence, manage issues, and keep the audit program moving.
-            </h1>
-            <p className="max-w-2xl text-sm text-white/70">
-              The workspace keeps analytics, issue review, uploads, and auditor
-              administration in one consistent flow without changing backend
-              behavior.
-            </p>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-                Access level
-              </p>
-              <p className="mt-2 text-2xl font-semibold">
-                {isAuditor ? "Auditor" : "Scoped view"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-                Review mode
-              </p>
-              <p className="mt-2 text-2xl font-semibold">Live</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-                Viewer email
-              </p>
-              <p className="mt-2 truncate text-sm font-semibold">{viewerEmail}</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* Analytics first, then Audit Issues, then Excel Upload */}
       <Tabs defaultValue="analytics" className="space-y-4">
         <TabsList
@@ -375,22 +334,6 @@ export const AuditorDashboard: React.FC = () => {
           value="audit-issues"
           className="space-y-4 overflow-visible"
         >
-          {/* Export toolbar */}
-          <div className="flex justify-end">
-            <Button
-              variant="outline"
-              onClick={() => {
-                const scope = isAuditor ? "all" : "mine";
-                const url = `${API_BASE_URL}/audit-issues/export?scope=${scope}&viewer=${encodeURIComponent(
-                  viewerEmail
-                )}`;
-                // Use navigation to trigger a file download
-                window.location.href = url;
-              }}
-            >
-              Export XLSX
-            </Button>
-          </div>
           <AuditTable
             key={reloadKey}
             // Let the table fetch from the server so evidence shows up immediately

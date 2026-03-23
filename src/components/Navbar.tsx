@@ -50,6 +50,12 @@ const Navbar = () => {
           icon: LayoutDashboard,
           description: "Assigned issues, evidence, comments",
         },
+        {
+          label: "Notifications",
+          path: "/notifications",
+          icon: Bell,
+          description: "Alerts, reminders, and updates",
+        },
         ...(isAuditor
           ? [
               {
@@ -150,6 +156,7 @@ const Navbar = () => {
             variant="ghost"
             size="icon"
             className="hidden rounded-2xl border border-transparent text-slate-500 hover:border-slate-200 hover:bg-white md:inline-flex"
+            onClick={() => navigate("/notifications")}
           >
             <Bell className="h-4 w-4" />
           </Button>

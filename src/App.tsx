@@ -8,6 +8,7 @@ import { Login } from "@/components/Login";
 import AppShell from "@/components/AppShell";
 import { AuditorDashboard } from "@/pages/AuditorDashboard";
 import { MyDashboard } from "@/pages/MyDashboard";
+import { NotificationsPage } from "@/pages/NotificationsPage";
 
 const queryClient = new QueryClient();
 
@@ -96,6 +97,14 @@ const App = () => (
               }
             />
             <Route path="/my-dashboard" element={<Navigate to="/my" replace />} />
+            <Route
+              path="/notifications"
+              element={
+                <ProtectedRoute>
+                  <NotificationsPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/auditor-dashboard"
               element={

@@ -10,6 +10,13 @@ import React, {
 } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AuditIssue } from "@/types/audit";
 import {
   TrendingUp,
@@ -18,6 +25,7 @@ import {
   Clock,
   Users,
   Download,
+  Eye,
 } from "lucide-react";
 import {
   Table,
@@ -53,18 +61,17 @@ interface AnalyticsProps {
   mode?: "auto" | "mine" | "all";
 }
 
+type ChartSelection = {
+  category: string;
+  series?: string;
+};
+
 /* ------------------------------- Utils ------------------------------------ */
 const startOfDay = (d: Date) => {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
 };
-const addDays = (d: Date, days: number) => {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
-};
-
 /** Robust date parse with many common shapes */
 const parseDateSmart = (val: any): Date | null => {
   if (val === undefined || val === null) return null;
@@ -382,7 +389,7 @@ function PieChartBox({
   colors?: string[];
   height?: number;
   innerRadiusPct?: number;
-  onSelect?: (category: string) => void;
+  onSelect?: (selection: ChartSelection) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useAmRoot(containerRef);
@@ -426,6 +433,7 @@ function PieChartBox({
         stroke: am5.color(0xffffff),
         strokeOpacity: 1,
         strokeWidth: 1,
+        cursorOverStyle: "pointer",
       });
       series.labels.template.setAll({
         text: "{category}",
@@ -458,6 +466,14 @@ function PieChartBox({
         });
       });
 
+      if (onSelect) {
+        series.slices.template.events.on("click", (event) => {
+          const ctx = event.target.dataItem?.dataContext as any;
+          const category = String(ctx?.name || "").trim();
+          if (category) onSelect({ category });
+        });
+      }
+
       series.appear(600, 50);
 
       // legend with percents
@@ -482,7 +498,7 @@ function PieChartBox({
         chart?.dispose();
       } catch {}
     };
-  }, [rootRef, data, colors, innerRadiusPct]);
+  }, [rootRef, data, colors, innerRadiusPct, onSelect]);
 
   return (
     <Card>
@@ -505,11 +521,13 @@ function BarChartBox({
   data,
   height = 300,
   angleLabels = false,
+  onSelect,
 }: {
   title: string;
   data: Array<{ name: string; value: number }>;
   height?: number;
   angleLabels?: boolean;
+  onSelect?: (selection: ChartSelection) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useAmRoot(containerRef);
@@ -580,7 +598,16 @@ function BarChartBox({
       series.columns.template.setAll({
         cornerRadiusTL: 4,
         cornerRadiusTR: 4,
+        cursorOverStyle: "pointer",
       });
+
+      if (onSelect) {
+        series.columns.template.events.on("click", (event) => {
+          const ctx = event.target.dataItem?.dataContext as any;
+          const category = String(ctx?.name || "").trim();
+          if (category) onSelect({ category });
+        });
+      }
 
       xAxis.data.setAll(data ?? []);
       series.data.setAll(data ?? []);
@@ -601,7 +628,7 @@ function BarChartBox({
         chart?.dispose();
       } catch {}
     };
-  }, [rootRef, data, angleLabels]);
+  }, [rootRef, data, angleLabels, onSelect]);
 
   return (
     <Card>
@@ -623,10 +650,12 @@ function StackedBarChartBox({
   title,
   data,
   height = 300,
+  onSelect,
 }: {
   title: string;
   data: Array<{ name: string; closed: number; open: number }>;
   height?: number;
+  onSelect?: (selection: ChartSelection) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useAmRoot(containerRef);
@@ -697,6 +726,19 @@ function StackedBarChartBox({
           series.columns.template.setAll({
             fill: am5.color(color),
             stroke: am5.color(color),
+            cursorOverStyle: "pointer",
+          });
+        }
+        if (onSelect) {
+          series.columns.template.events.on("click", (event) => {
+            const ctx = event.target.dataItem?.dataContext as any;
+            const category = String(ctx?.name || "").trim();
+            if (category) {
+              onSelect({
+                category,
+                series: field,
+              });
+            }
           });
         }
         series.data.setAll(data ?? []);
@@ -731,7 +773,7 @@ function StackedBarChartBox({
         chart?.dispose();
       } catch {}
     };
-  }, [rootRef, data]);
+  }, [rootRef, data, onSelect]);
 
   return (
     <Card>
@@ -753,10 +795,12 @@ function LineChartBox({
   title,
   data,
   height = 300,
+  onSelect,
 }: {
   title: string;
   data: Array<{ year: string; total: number; closed: number }>;
   height?: number;
+  onSelect?: (selection: ChartSelection) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useAmRoot(containerRef);
@@ -795,8 +839,8 @@ function LineChartBox({
         })
       );
 
-      const mk = (name: string, field: "total" | "closed", color: string) =>
-        chart!.series.push(
+      const mk = (name: string, field: "total" | "closed", color: string) => {
+        const series = chart!.series.push(
           am5xy.LineSeries.new(root, {
             name,
             xAxis,
@@ -811,6 +855,37 @@ function LineChartBox({
           })
         );
 
+        series.strokes.template.setAll({ strokeWidth: 3 });
+        series.bullets.push((_root, _series, dataItem) => {
+          const circle = am5.Circle.new(root, {
+            radius: 5,
+            fill: am5.color(color),
+            stroke: am5.color(0xffffff),
+            strokeWidth: 2,
+            cursorOverStyle: "pointer",
+          });
+
+          if (onSelect) {
+            circle.events.on("click", () => {
+              const ctx = dataItem.dataContext as any;
+              const category = String(ctx?.year || "").trim();
+              if (category) {
+                onSelect({
+                  category,
+                  series: field,
+                });
+              }
+            });
+          }
+
+          return am5.Bullet.new(root, {
+            sprite: circle,
+          });
+        });
+
+        return series;
+      };
+
       xAxis.data.setAll(data ?? []);
 
       const s1 = mk("Total", "total", "#3B82F6");
@@ -818,14 +893,6 @@ function LineChartBox({
 
       s1.data.setAll(data ?? []);
       s2.data.setAll(data ?? []);
-
-      [s1, s2].forEach((s) =>
-        s.bullets.push(() =>
-          am5.Bullet.new(root, {
-            sprite: am5.Circle.new(root, { radius: 4, fill: s.get("stroke") }),
-          })
-        )
-      );
 
       chart.set(
         "cursor",
@@ -849,7 +916,7 @@ function LineChartBox({
         chart?.dispose();
       } catch {}
     };
-  }, [rootRef, data]);
+  }, [rootRef, data, onSelect]);
 
   return (
     <Card>
@@ -888,17 +955,21 @@ function Analytics({
     )?.toLowerCase?.() || "";
 
   // Pull from store if available (keeps Analytics consistent with AuditTable)
-  let storageIssues: AuditIssue[] = [];
-  try {
-    storageIssues = (useAuditStorage() as any)?.auditIssues || [];
-  } catch {
-    // hook not available; ignore
-  }
+  const auditStorage = useAuditStorage() as { auditIssues?: AuditIssue[] };
+  const storageIssues = auditStorage?.auditIssues || [];
 
   // API fallback
   const [apiIssues, setApiIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [drilldown, setDrilldown] = useState<{
+    sourceKey: string;
+    title: string;
+    description: string;
+    rows: AuditIssue[];
+  } | null>(null);
+  const [detailIssue, setDetailIssue] = useState<AuditIssue | null>(null);
+  const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => setMounted(true), []);
 
@@ -1094,7 +1165,7 @@ function Analytics({
   // CXO performance: Closed/Accepted vs Open, aggregated across all emails in cxoResponsible
   const cxoAgg = new Map<
     string,
-    { name: string; closed: number; open: number }
+    { key: string; name: string; closed: number; open: number }
   >();
   for (const i of auditIssues) {
     const cxos = splitList(i.cxoResponsible);
@@ -1107,14 +1178,15 @@ function Analytics({
       seen.add(key);
       const human = raw.split("@")[0] || raw || "—";
       if (!cxoAgg.has(key))
-        cxoAgg.set(key, { name: human, closed: 0, open: 0 });
+        cxoAgg.set(key, { key, name: human, closed: 0, open: 0 });
       if (closedEq) cxoAgg.get(key)!.closed += 1;
       else cxoAgg.get(key)!.open += 1;
     }
     // handle issues with no CXO
     if (cxos.length === 0) {
       const key = "—";
-      if (!cxoAgg.has(key)) cxoAgg.set(key, { name: "—", closed: 0, open: 0 });
+      if (!cxoAgg.has(key))
+        cxoAgg.set(key, { key, name: "—", closed: 0, open: 0 });
       if (closedEq) cxoAgg.get(key)!.closed += 1;
       else cxoAgg.get(key)!.open += 1;
     }
@@ -1182,6 +1254,335 @@ function Analytics({
   }));
 
   /* --------------------------------- Render -------------------------------- */
+
+  const processTopNames = processTop.map((item) => item.name);
+  const entityTopNames = entityTop.map((item) => item.name);
+
+  const formatIssueDate = (value?: string | null) => {
+    if (!value) return "—";
+    const parsed = parseDateSmart(value);
+    return parsed ? parsed.toLocaleDateString() : String(value);
+  };
+
+  const renderAging = (issue: AuditIssue) => {
+    const d = getDueDate(issue);
+    if (!d) return "No due date";
+    const diff = daysBetween(today, d);
+    if (isClosedEquivalent(issue)) return "Closed";
+    if (diff > 0) return `${diff} day(s) overdue`;
+    if (diff === 0) return "Due today";
+    return `Due in ${Math.abs(diff)} day(s)`;
+  };
+
+  const buildExportRows = (rows: AuditIssue[]) =>
+    rows.map((issue, index) => ({
+      "S.No": issue.serialNumber ?? index + 1,
+      Process: issue.process || "",
+      Entity: issue.entityCovered || "",
+      Observation: issue.observation || "",
+      "Person Responsible": issue.personResponsible || "",
+      Approver: issue.approver || "",
+      "CXO Responsible": issue.cxoResponsible || "",
+      "Due Date": getDueDate(issue)?.toISOString().slice(0, 10) || "",
+      Status: issue.currentStatus || "",
+      "Evidence Status": (issue as any).evidenceStatus || "",
+      Aging: renderAging(issue),
+      "Accepted/Closed On":
+        getAcceptedAt(issue)?.toISOString().slice(0, 10) || "",
+      "Updated At": issue.updatedAt || "",
+    }));
+
+  const exportIssues = async (rows: AuditIssue[], suffix: string) => {
+    const XLSX = await import("xlsx");
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(buildExportRows(rows));
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Analytics");
+    XLSX.writeFile(
+      workbook,
+      `analytics_${suffix}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    );
+  };
+
+  const openDrilldown = (
+    sourceKey: string,
+    nextTitle: string,
+    rows: AuditIssue[],
+    description: string
+  ) => {
+    setDrilldown({
+      sourceKey,
+      title: nextTitle,
+      rows,
+      description,
+    });
+
+    window.requestAnimationFrame(() => {
+      drilldownRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  };
+
+  const handleStatusDrilldown = (selection: ChartSelection) => {
+    const category = selection.category;
+    const rows = auditIssues.filter(
+      (issue) => (issue.currentStatus || "Unknown").trim() === category
+    );
+    openDrilldown(
+      "status",
+      `Status: ${category}`,
+      rows,
+      "Issues contributing to the selected status bucket."
+    );
+  };
+
+  const handleRiskDrilldown = (selection: ChartSelection) => {
+    const target = selection.category.toLowerCase();
+    const rows = auditIssues.filter(
+      (issue) => normalizeRisk(issue.riskLevel) === target
+    );
+    openDrilldown(
+      "risk",
+      `Risk level: ${selection.category}`,
+      rows,
+      "Issues contributing to the selected risk distribution."
+    );
+  };
+
+  const handleProcessDrilldown = (selection: ChartSelection) => {
+    const category = selection.category;
+    const rows =
+      category === "Others"
+        ? auditIssues.filter(
+            (issue) => !processTopNames.includes((issue.process || "—").trim())
+          )
+        : auditIssues.filter((issue) => (issue.process || "—").trim() === category);
+    openDrilldown(
+      "process",
+      `Process: ${category}`,
+      rows,
+      "Issues grouped under the selected process bucket."
+    );
+  };
+
+  const handleCxoDrilldown = (selection: ChartSelection) => {
+    const category = selection.category;
+    const rows = auditIssues.filter((issue) => {
+      const cxos = splitList(issue.cxoResponsible);
+      const matches =
+        category === "—"
+          ? cxos.length === 0
+          : cxos.some((raw) => (raw.split("@")[0] || raw || "—") === category);
+
+      if (!matches) return false;
+
+      if (selection.series === "closed") return isClosedEquivalent(issue);
+      if (selection.series === "open") return !isClosedEquivalent(issue);
+      return true;
+    });
+
+    openDrilldown(
+      "cxo",
+      `CXO: ${category}${
+        selection.series === "closed"
+          ? " · Closed/Accepted"
+          : selection.series === "open"
+          ? " · Open"
+          : ""
+      }`,
+      rows,
+      "Issues represented by the selected CXO performance segment."
+    );
+  };
+
+  const handleFiscalYearDrilldown = (selection: ChartSelection) => {
+    const rows = auditIssues.filter((issue) => {
+      if (issue.fiscalYear !== selection.category) return false;
+      if (selection.series === "closed") return isClosedEquivalent(issue);
+      return true;
+    });
+
+    openDrilldown(
+      "fiscal-year",
+      `Fiscal year: ${selection.category}${
+        selection.series === "closed" ? " · Closed/Accepted" : ""
+      }`,
+      rows,
+      "Issues represented by the selected fiscal year trend point."
+    );
+  };
+
+  const handleEntityDrilldown = (selection: ChartSelection) => {
+    const category = selection.category;
+    const rows =
+      category === "Others"
+        ? auditIssues.filter((issue) =>
+            splitList(issue.entityCovered).every(
+              (entity) => !entityTopNames.includes(entity)
+            )
+          )
+        : auditIssues.filter((issue) =>
+            splitList(issue.entityCovered).includes(category)
+          );
+    openDrilldown(
+      "entity",
+      `Entity: ${category}`,
+      rows,
+      "Issues represented by the selected entity bucket."
+    );
+  };
+
+  const handleOverdueDrilldown = (selection: ChartSelection) => {
+    const rows = auditIssues.filter((issue) => {
+      if (isClosedEquivalent(issue)) return false;
+      const d = getDueDate(issue);
+      if (!d || d >= today) return false;
+      const late = daysBetween(today, d);
+      if (selection.category === "0–30") return late <= 30;
+      if (selection.category === "31–60") return late > 30 && late <= 60;
+      if (selection.category === "61–90") return late > 60 && late <= 90;
+      return late > 90;
+    });
+    openDrilldown(
+      "overdue",
+      `Overdue bucket: ${selection.category}`,
+      rows,
+      "Open issues represented by the selected overdue aging bucket."
+    );
+  };
+
+  const handleUpcomingDrilldown = (selection: ChartSelection) => {
+    const rows = auditIssues.filter((issue) => {
+      if (isClosedEquivalent(issue)) return false;
+      const d = getDueDate(issue);
+      if (!d || d < today) return false;
+      const ahead = daysBetween(d, today);
+      if (selection.category === "≤30") return ahead <= 30;
+      if (selection.category === "31–60") return ahead > 30 && ahead <= 60;
+      return ahead > 60 && ahead <= 90;
+    });
+    openDrilldown(
+      "upcoming",
+      `Due soon: ${selection.category}`,
+      rows,
+      "Open issues represented by the selected upcoming due bucket."
+    );
+  };
+
+  const renderDrilldownCard = (sourceKey: string) => {
+    if (!drilldown || drilldown.sourceKey !== sourceKey) return null;
+
+    return (
+      <Card ref={drilldownRef}>
+        <CardHeader className="gap-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <CardTitle>{drilldown.title}</CardTitle>
+              <p className="text-sm text-gray-600">{drilldown.description}</p>
+              <Badge
+                variant="secondary"
+                className="w-fit border border-slate-200 bg-slate-100 text-slate-700"
+              >
+                {drilldown.rows.length} issue
+                {drilldown.rows.length === 1 ? "" : "s"}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => exportIssues(auditIssues, "all_visible")}
+                disabled={auditIssues.length === 0}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Export all
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  exportIssues(drilldown.rows, `${sourceKey}_filtered`)
+                }
+                disabled={drilldown.rows.length === 0}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Export filtered
+              </Button>
+              <Button variant="ghost" onClick={() => setDrilldown(null)}>
+                Clear selection
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="whitespace-nowrap">Issue</TableHead>
+                  <TableHead className="whitespace-nowrap">Process</TableHead>
+                  <TableHead className="whitespace-nowrap">Entity</TableHead>
+                  <TableHead className="whitespace-nowrap">
+                    Person Responsible
+                  </TableHead>
+                  <TableHead className="whitespace-nowrap">Due</TableHead>
+                  <TableHead className="whitespace-nowrap">Status</TableHead>
+                  <TableHead className="whitespace-nowrap">Aging</TableHead>
+                  <TableHead className="whitespace-nowrap">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {drilldown.rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center text-gray-500">
+                      No issues found for the selected chart segment.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  drilldown.rows.map((issue, index) => (
+                    <TableRow
+                      key={(issue as any).id || `${issue.serialNumber}-${index}`}
+                    >
+                      <TableCell className="whitespace-nowrap font-medium">
+                        #{issue.serialNumber ?? index + 1}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {issue.process || "—"}
+                      </TableCell>
+                      <TableCell className="max-w-[260px] whitespace-normal">
+                        {issue.entityCovered || "—"}
+                      </TableCell>
+                      <TableCell className="max-w-[260px] whitespace-normal">
+                        {issue.personResponsible || "—"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {getDueDate(issue)?.toLocaleDateString() || "—"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {issue.currentStatus || "—"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {renderAging(issue)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setDetailIssue(issue)}
+                        >
+                          <Eye className="mr-2 h-4 w-4" />
+                          Detail
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -1262,7 +1663,12 @@ function Analytics({
 
       {/* Charts (render after mount to avoid SSR/hydration hitches) */}
       {mounted && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          <div className="rounded-3xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+            Click any chart slice, bar, or point to open the supporting issue
+            table directly below that chart.
+          </div>
+
           <ErrorBoundary title="Status Distribution">
             <PieChartBox
               title="Status Distribution"
@@ -1270,8 +1676,11 @@ function Analytics({
               // Colors (tune to your palette)
               colors={["#10B981", "#3B82F6", "#F59E0B", "#EF4444", "#6B7280"]}
               innerRadiusPct={55}
+              height={360}
+              onSelect={handleStatusDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("status")}
 
           <ErrorBoundary title="Risk Level Distribution">
             <PieChartBox
@@ -1279,38 +1688,53 @@ function Analytics({
               data={riskData}
               colors={["#EF4444", "#F59E0B", "#10B981"]} // High, Medium, Low
               innerRadiusPct={55}
+              height={360}
+              onSelect={handleRiskDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("risk")}
 
           <ErrorBoundary title="Issues by Process (Top 12)">
             <BarChartBox
               title="Issues by Process (Top 12)"
               data={processData}
               angleLabels
+              height={360}
+              onSelect={handleProcessDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("process")}
 
           <ErrorBoundary title="CXO Performance (Closed/Accepted vs Open)">
             <StackedBarChartBox
               title="CXO Performance (Closed/Accepted vs Open)"
               data={cxoData}
+              height={380}
+              onSelect={handleCxoDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("cxo")}
 
           <ErrorBoundary title="Fiscal Year Trend (Total vs Closed/Accepted)">
             <LineChartBox
               title="Fiscal Year Trend (Total vs Closed/Accepted)"
               data={fiscalYearData}
+              height={360}
+              onSelect={handleFiscalYearDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("fiscal-year")}
 
           <ErrorBoundary title="Issues by Entity (Top 12)">
             <BarChartBox
               title="Issues by Entity (Top 12)"
               data={entityData}
               angleLabels
+              height={360}
+              onSelect={handleEntityDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("entity")}
 
           <ErrorBoundary title="Aging — Overdue Buckets">
             <PieChartBox
@@ -1319,371 +1743,158 @@ function Analytics({
               innerRadiusPct={55} // donut
               // yellow → amber → orange → red
               colors={["#FDE047", "#F59E0B", "#F97316", "#EF4444"]}
+              height={360}
+              onSelect={handleOverdueDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("overdue")}
 
           <ErrorBoundary title="Due in Next 30/60/90 Days">
             <BarChartBox
               title="Due in Next 30/60/90 Days"
               data={upcomingData}
+              height={340}
+              onSelect={handleUpcomingDrilldown}
             />
           </ErrorBoundary>
+          {renderDrilldownCard("upcoming")}
         </div>
       )}
 
-      {/* Reports: Dynamic Table (always shows rows; includes fallback) */}
-      <ReportsTableSection issues={auditIssues} viewerEmail={viewerEmail} />
-    </div>
-  );
-}
+      <Dialog
+        open={!!detailIssue}
+        onOpenChange={(open) => {
+          if (!open) setDetailIssue(null);
+        }}
+      >
+        <DialogContent className="max-h-[88vh] max-w-[900px] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {detailIssue
+                ? `Issue #${detailIssue.serialNumber} - ${detailIssue.process}`
+                : "Issue detail"}
+            </DialogTitle>
+          </DialogHeader>
 
-/* ------------------------- Reports Table Section -------------------------- */
+          {detailIssue && (
+            <div className="space-y-5">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Entity
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-slate-900">
+                      {detailIssue.entityCovered || "—"}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Person Responsible
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-slate-900">
+                      {detailIssue.personResponsible || "—"}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Due Date
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-slate-900">
+                      {getDueDate(detailIssue)?.toLocaleDateString() || "—"}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Updated
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-slate-900">
+                      {formatIssueDate(detailIssue.updatedAt)}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Accepted/Closed
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-slate-900">
+                      {getAcceptedAt(detailIssue)?.toLocaleDateString() || "—"}
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
 
-function ReportsTableSection({
-  issues,
-  viewerEmail,
-}: {
-  issues: AuditIssue[];
-  viewerEmail?: string;
-}) {
-  type ReportMode = "upcoming" | "recent" | "overdue";
-  const [reportMode, setReportMode] = React.useState<ReportMode>("upcoming");
-  const [periodDays, setPeriodDays] = React.useState<"30" | "60" | "90">("90");
-  const userTouched = React.useRef(false);
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Observation</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm leading-6 text-slate-700">
+                  {detailIssue.observation || "—"}
+                </CardContent>
+              </Card>
 
-  const today = React.useMemo(() => startOfDay(new Date()), []);
-  const horizonStart = React.useMemo(
-    () => addDays(today, -Number(periodDays)),
-    [today, periodDays]
-  );
-  const horizonEnd = React.useMemo(
-    () => addDays(today, Number(periodDays)),
-    [today, periodDays]
-  );
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Action required</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-sm leading-6 text-slate-700">
+                    {detailIssue.actionRequired || "—"}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Recommendation</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-sm leading-6 text-slate-700">
+                    {detailIssue.recommendation || "—"}
+                  </CardContent>
+                </Card>
+              </div>
 
-  // Pick an initial view that actually has rows (only once)
-  React.useEffect(() => {
-    if (!issues?.length || userTouched.current) return;
-
-    const due = (i: AuditIssue) => getDueDate(i);
-    const accepted = (i: AuditIssue) => getAcceptedAt(i);
-
-    const upcomingCount = issues.filter((i) => {
-      const d = due(i);
-      return !!d && d >= today && d <= horizonEnd && !isClosedEquivalent(i);
-    }).length;
-
-    const overdueCount = issues.filter((i) => {
-      const d = due(i);
-      return !!d && d < today && !isClosedEquivalent(i);
-    }).length;
-
-    const recentCount = issues.filter((i) => {
-      if (!isClosedEquivalent(i)) return false;
-      const a = accepted(i) || parseDateSmart((i as any).updatedAt);
-      return !!a && a >= horizonStart && a <= today;
-    }).length;
-
-    if (upcomingCount > 0) setReportMode("upcoming");
-    else if (overdueCount > 0) setReportMode("overdue");
-    else if (recentCount > 0) setReportMode("recent");
-  }, [issues, today, horizonEnd, horizonStart]);
-
-  // Main filtered rows
-  const rowsMain = React.useMemo(() => {
-    if (!Array.isArray(issues) || issues.length === 0) return [];
-
-    const due = (i: AuditIssue) => getDueDate(i);
-    const accepted = (i: AuditIssue) => getAcceptedAt(i);
-
-    if (reportMode === "recent") {
-      // Closed/Accepted in last N days
-      return issues
-        .filter((i) => {
-          if (!isClosedEquivalent(i)) return false;
-          const a = accepted(i) || parseDateSmart((i as any).updatedAt);
-          return !!a && a >= horizonStart && a <= today;
-        })
-        .sort(
-          (a, b) =>
-            (
-              accepted(b) ||
-              parseDateSmart((b as any).updatedAt) ||
-              today
-            ).getTime() -
-            (
-              accepted(a) ||
-              parseDateSmart((a as any).updatedAt) ||
-              today
-            ).getTime()
-        );
-    }
-
-    if (reportMode === "upcoming") {
-      // Due in next N days
-      return issues
-        .filter((i) => {
-          const d = due(i);
-          return !!d && d >= today && d <= horizonEnd && !isClosedEquivalent(i);
-        })
-        .sort((a, b) => due(a)!.getTime() - due(b)!.getTime());
-    }
-
-    // Overdue in last N days (bucketed same as upcoming but in the past)
-    return issues
-      .filter((i) => {
-        const d = due(i);
-        return !!d && d < today && d >= horizonStart && !isClosedEquivalent(i);
-      })
-      .sort((a, b) => due(a)!.getTime() - due(b)!.getTime());
-  }, [issues, reportMode, horizonStart, horizonEnd, today]);
-
-  // Hard fallback to ensure table is populated even when nothing matches
-  const fallbackRows = React.useMemo(() => {
-    if (!Array.isArray(issues) || issues.length === 0) return [];
-    // Sort by a "best available" timestamp: acceptedAt > updatedAt > dueDate > createdAt
-    const getBestDate = (i: any): Date | null =>
-      getAcceptedAt(i) ||
-      parseDateSmart(i?.updatedAt) ||
-      getDueDate(i) ||
-      parseDateSmart(i?.createdAt) ||
-      null;
-
-    return [...issues].sort((a, b) => {
-      const da = getBestDate(a) || new Date(0);
-      const db = getBestDate(b) || new Date(0);
-      return db.getTime() - da.getTime();
-    });
-  }, [issues]);
-
-  const usingFallback = rowsMain.length === 0 && fallbackRows.length > 0;
-  const rows = usingFallback ? fallbackRows : rowsMain;
-
-  const title = usingFallback
-    ? "All Issues (no matches — showing all)"
-    : reportMode === "upcoming"
-    ? `Due in next ${periodDays} days`
-    : reportMode === "recent"
-    ? `Closed/Accepted in last ${periodDays} days`
-    : `Overdue (last ${periodDays} days)`;
-
-  const renderAging = (issue: AuditIssue) => {
-    const d = getDueDate(issue);
-    if (!d) return "—";
-    const diff = daysBetween(today, d); // positive => overdue, negative => in future
-    if (diff > 0) return `${diff} day(s) overdue`;
-    if (diff === 0) return "due today";
-    return `in ${Math.abs(diff)} day(s)`;
-  };
-
-  const onExportXlsx = async () => {
-    // (unchanged) client-side quick export of the visible columns
-    const XLSX = await import("xlsx");
-    const exportRows = rows.map((i, idx) => {
-      const due = getDueDate(i);
-      const accepted = getAcceptedAt(i) || parseDateSmart((i as any).updatedAt);
-      return {
-        "S.No": i.serialNumber ?? idx + 1,
-        Process: i.process || "",
-        Entity: i.entityCovered || "",
-        "Due Date": due ? due.toISOString().slice(0, 10) : "",
-        Status: i.currentStatus || "",
-        Aging: renderAging(i),
-        "Accepted/Updated On": accepted
-          ? accepted.toISOString().slice(0, 10)
-          : "",
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(exportRows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Report");
-    XLSX.writeFile(wb, `analytics_${reportMode}_${periodDays}d.xlsx`);
-  };
-
-  // NEW: server-side detailed export (uses viewer auth + same filters)
-  const onExportServer = async () => {
-    if (!viewerEmail) {
-      alert("Sign in to export the detailed report.");
-      return;
-    }
-    const params = new URLSearchParams({
-      viewer: viewerEmail,
-      scope: "all", // server will down-scope if needed
-      mode: reportMode, // upcoming|recent|overdue
-      days: String(periodDays), // 30|60|90
-    });
-    const url = `${API_BASE_URL}/audit-issues/export-filtered?${params.toString()}`;
-
-    const res = await fetch(url);
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      alert(`Export failed (${res.status}). ${msg || ""}`);
-      return;
-    }
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `analytics_${reportMode}_${periodDays}d_detailed.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(a.href);
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Report — {title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {/* Filters specifically for the table */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end mb-4">
-          <div>
-            <div className="text-sm text-gray-600 mb-1">View</div>
-            <select
-              value={reportMode}
-              onChange={(e) => {
-                userTouched.current = true;
-                setReportMode(e.target.value as ReportMode);
-              }}
-              className="border rounded p-2 w-full"
-            >
-              <option value="upcoming">Due (next N days)</option>
-              <option value="recent">Closed/Accepted (last N days)</option>
-              <option value="overdue">Overdue (last N days)</option>
-            </select>
-
-            <select
-              value={periodDays}
-              onChange={(e) =>
-                setPeriodDays(e.target.value as "30" | "60" | "90")
-              }
-              className="border rounded p-2 w-full"
-            >
-              <option value="30">30 days</option>
-              <option value="60">60 days</option>
-              <option value="90">90 days</option>
-            </select>
-          </div>
-
-          <div>
-            <div className="text-sm text-gray-600 mb-1">Period</div>
-            <select
-              value={periodDays}
-              onChange={(e) =>
-                setPeriodDays(e.target.value as "30" | "60" | "90")
-              }
-              disabled={reportMode === "overdue" || usingFallback}
-              className="border rounded p-2 w-full disabled:bg-gray-100 disabled:text-gray-500"
-            >
-              <option value="30">30 days</option>
-              <option value="60">60 days</option>
-              <option value="90">90 days</option>
-            </select>
-          </div>
-
-          <div className="md:col-span-1">
-            <div className="text-sm text-gray-600 mb-1">Title</div>
-            <div className="p-2 border rounded text-gray-800 bg-gray-50">
-              {title}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Routing</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Approver
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      {detailIssue.approver || "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      CXO Responsible
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      {detailIssue.cxoResponsible || "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      Evidence Status
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      {(detailIssue as any).evidenceStatus || "—"}
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
-          </div>
-        </div>
-
-        {usingFallback && (
-          <div className="text-xs text-gray-500 mb-2">
-            No items matched the current filter. Showing all issues instead.
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2 mb-3">
-          <Button
-            variant="outline"
-            onClick={onExportXlsx}
-            className="flex items-center gap-2"
-          >
-            <Download className="h-4 w-4" />
-            Export XLSX (this table)
-          </Button>
-          <Button
-            onClick={onExportServer}
-            className="flex items-center gap-2"
-            disabled={!viewerEmail}
-            title={
-              !viewerEmail
-                ? "Sign in required"
-                : "Download detailed XLSX from server"
-            }
-          >
-            <Download className="h-4 w-4" />
-            Export Detailed XLSX
-          </Button>
-        </div>
-
-        {/* The table */}
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="whitespace-nowrap">S.No</TableHead>
-                <TableHead className="whitespace-nowrap">Process</TableHead>
-                <TableHead className="whitespace-nowrap">Entity</TableHead>
-                <TableHead className="whitespace-nowrap">Due Date</TableHead>
-                <TableHead className="whitespace-nowrap">Status</TableHead>
-                <TableHead className="whitespace-nowrap">Aging</TableHead>
-                <TableHead className="whitespace-nowrap">
-                  Accepted/Updated On
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-center text-gray-500">
-                    No issues available.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                rows.map((i, idx) => {
-                  const due = getDueDate(i);
-                  const accepted =
-                    getAcceptedAt(i) || parseDateSmart((i as any).updatedAt);
-                  const rowKey =
-                    (i as any).id ??
-                    `${i.process || "proc"}-${i.serialNumber || idx}`;
-
-                  return (
-                    <TableRow key={rowKey}>
-                      <TableCell className="whitespace-nowrap">
-                        {i.serialNumber ?? idx + 1}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {i.process || "—"}
-                      </TableCell>
-                      <TableCell className="whitespace-pre-wrap">
-                        {i.entityCovered || "—"}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {due ? due.toISOString().slice(0, 10) : "—"}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {i.currentStatus || "—"}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {renderAging(i)}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {accepted ? accepted.toISOString().slice(0, 10) : "—"}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </CardContent>
-    </Card>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

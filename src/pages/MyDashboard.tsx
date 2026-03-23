@@ -388,46 +388,6 @@ export const MyDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <section className="overflow-hidden rounded-[32px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(15,23,42,0.96),rgba(30,41,59,0.9)_38%,rgba(14,116,144,0.82))] px-6 py-8 text-white shadow-[0_32px_80px_-48px_rgba(15,23,42,0.85)] sm:px-8">
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
-          <div className="max-w-3xl space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/65">
-              Personal workspace
-            </p>
-            <h1 className="text-4xl font-semibold tracking-tight">
-              Work each assigned audit issue from one place.
-            </h1>
-            <p className="max-w-2xl text-sm text-white/70">
-              Review your pending observations, upload evidence faster, and keep
-              comments visible for approvers, CXOs, and special viewers.
-            </p>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-                Issues in scope
-              </p>
-              <p className="mt-2 text-3xl font-semibold">{displayedIssues.length}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-                Active roles
-              </p>
-              <p className="mt-2 text-3xl font-semibold">{myRoles.length || 1}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-                Viewer mode
-              </p>
-              <p className="mt-2 text-lg font-semibold">
-                {isSpecialAllViewer ? "All issues" : "Assigned only"}
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <Tabs defaultValue="analytics" className="space-y-4">
         <TabsList className="grid w-full max-w-md grid-cols-2 rounded-2xl bg-white/85 p-1 shadow-sm">
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
@@ -499,6 +459,7 @@ export const MyDashboard: React.FC = () => {
                 }
                 actionColumn={actionColumn}
                 viewer={me}
+                onRefreshRequested={() => loadMyIssues()}
               />
             </CardContent>
           </Card>

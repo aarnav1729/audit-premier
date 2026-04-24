@@ -41,22 +41,23 @@ const FISCAL_YEARS = ["2022-23", "2023-24", "2024-25", "2025-26"];
 const PROCESSES = [
   "Procure to Pay",
   "Inventory Management",
-  "Order to Cash",
-  "Production Planning and Quality Control",
+  "Order to cash",
+  "Production Planning & Quality Control",
   "HR & Payroll",
   "Compliance Monitoring Mechanism",
-  "Financial Statement Close Procedures",
+  "Financial Statement Close Process (FSCP)",
   "Bank & Treasury",
   "Fixed Asset Management",
-  "Information Technology General Controls",
-  "Project Management Review",
-  "SAP Security Controls Review",
-  "Environment, Health and Safety (EHS)",
-  "Specific Expense Management Review",
+  "Information Technology & General Controls",
+  "Project Management",
+  "SAP Security Review",
+  "EHS",
+  "Specific Expense Management review",
+  "Subsidiaries",
 ];
 const ENTITIES = ["PEL", "PSPT", "PEPPL", "PEIPL", "PEGEPL"];
 const RISK_LEVELS = ["high", "medium", "low"] as const;
-const STATUSES = ["To Be Received", "Received", "Partially Received"] as const;
+const STATUSES = ["To Be Received", "Received"] as const;
 
 export const CreateAuditModal: React.FC<CreateAuditModalProps> = ({
   open,

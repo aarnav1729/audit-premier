@@ -309,6 +309,22 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 app.use("/uploads", express.static(uploadsDir));
+app.get("/api/files/download", (req, res) => {
+  const rawPath = String(req.query.path || "");
+  const originalName = path.basename(String(req.query.name || "download"));
+  const cleaned = rawPath.replace(/^\.*\/?/, "");
+  if (!cleaned.startsWith("uploads/")) {
+    return res.status(400).json({ error: "Invalid file path" });
+  }
+  const absolute = path.resolve(__dirname, cleaned);
+  if (!absolute.startsWith(path.resolve(uploadsDir))) {
+    return res.status(400).json({ error: "Invalid file path" });
+  }
+  if (!fs.existsSync(absolute)) {
+    return res.status(404).json({ error: "File not found" });
+  }
+  return res.download(absolute, originalName || path.basename(absolute));
+});
 
 /* --------------------------------- Multer ---------------------------------- */
 const memoryUpload = multer({ storage: multer.memoryStorage() });
@@ -417,9 +433,72 @@ const isAccepted = (s) =>
 
 /* ------------------------------ Mail templating ------------------------------ */
 const APP_NAME = process.env.APP_NAME || "CAM: Comprehensive Audit Management";
+
+const CANONICAL_PROCESSES = [
+  "Procure to Pay",
+  "Inventory Management",
+  "Order to cash",
+  "Production Planning & Quality Control",
+  "HR & Payroll",
+  "Compliance Monitoring Mechanism",
+  "Financial Statement Close Process (FSCP)",
+  "Bank & Treasury",
+  "Fixed Asset Management",
+  "Information Technology & General Controls",
+  "Project Management",
+  "SAP Security Review",
+  "EHS",
+  "Specific Expense Management review",
+  "Subsidiaries",
+];
+
+const PROCESS_SCOPED_STATIC_AUDITORS = {
+  "sumit.shandilya@protivitiglobal.in": ["Project Management"],
+};
+
+const RESTRICTED_AUDITOR_EMAILS = new Set(
+  String(process.env.RESTRICTED_AUDITOR_EMAILS || "naresh.kumar.mekala@premierenergies.com")
+    .toLowerCase()
+    .split(/[,\s;]+/)
+    .filter(Boolean)
+);
+
+const processKey = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/\bfscp\b/g, "financial statement close process")
+    .replace(/\behs\b/g, "environment health safety")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+function normProcess(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Subsidiaries";
+  const key = processKey(raw);
+  const direct = new Map(CANONICAL_PROCESSES.map((p) => [processKey(p), p]));
+  if (direct.has(key)) return direct.get(key);
+  if (key.includes("procure") || key.includes("p2p")) return "Procure to Pay";
+  if (key.includes("inventory")) return "Inventory Management";
+  if (key.includes("order") || key.includes("otc")) return "Order to cash";
+  if (key.includes("production") || key.includes("quality")) return "Production Planning & Quality Control";
+  if (key.includes("payroll") || /\bhr\b/.test(key)) return "HR & Payroll";
+  if (key.includes("compliance")) return "Compliance Monitoring Mechanism";
+  if (key.includes("financial statement") || key.includes("close process")) return "Financial Statement Close Process (FSCP)";
+  if (key.includes("bank") || key.includes("treasury")) return "Bank & Treasury";
+  if (key.includes("fixed asset")) return "Fixed Asset Management";
+  if (key.includes("information technology") || key.includes("itgc") || key.includes("general control")) return "Information Technology & General Controls";
+  if (key.includes("project")) return "Project Management";
+  if (key.includes("sap") || key.includes("security review")) return "SAP Security Review";
+  if (key.includes("environment") || key.includes("health") || key.includes("safety")) return "EHS";
+  if (key.includes("expense")) return "Specific Expense Management review";
+  if (key.includes("subsidiar")) return "Subsidiaries";
+  return "Subsidiaries";
+}
+
 const getAuditorList = () => [
   ...new Set([...AUDITOR_EMAILS, ...STATIC_AUDITORS]),
-];
+].filter((email) => !RESTRICTED_AUDITOR_EMAILS.has(String(email).toLowerCase()));
 
 function emailTemplate({
   title,
@@ -603,6 +682,49 @@ async function initDb() {
       SET quarter = CASE WHEN serialNumber >= 52 THEN 'Q2' ELSE 'Q4' END
       WHERE quarter IS NULL;
   END
+`);
+
+    await auditPool.request().query(`
+  UPDATE dbo.AuditIssues
+     SET currentStatus = CASE
+       WHEN LOWER(LTRIM(RTRIM(ISNULL(evidenceStatus,'')))) = 'accepted'
+         OR LOWER(LTRIM(RTRIM(ISNULL(currentStatus,'')))) IN ('received','closed','accepted','resolved')
+         THEN 'Received'
+       ELSE 'To Be Received'
+     END
+   WHERE currentStatus IS NULL
+      OR LTRIM(RTRIM(currentStatus)) NOT IN ('To Be Received','Received')
+      OR LOWER(LTRIM(RTRIM(ISNULL(evidenceStatus,'')))) = 'accepted';
+
+  UPDATE dbo.AuditIssues
+     SET process = CASE
+       WHEN LOWER(process) LIKE '%procure%' OR LOWER(process) LIKE '%p2p%' THEN 'Procure to Pay'
+       WHEN LOWER(process) LIKE '%inventory%' THEN 'Inventory Management'
+       WHEN LOWER(process) LIKE '%order%' OR LOWER(process) LIKE '%otc%' THEN 'Order to cash'
+       WHEN LOWER(process) LIKE '%production%' OR LOWER(process) LIKE '%quality%' THEN 'Production Planning & Quality Control'
+       WHEN LOWER(process) LIKE '%payroll%' OR LOWER(process) LIKE '%hr%' THEN 'HR & Payroll'
+       WHEN LOWER(process) LIKE '%compliance%' THEN 'Compliance Monitoring Mechanism'
+       WHEN LOWER(process) LIKE '%financial statement%' OR LOWER(process) LIKE '%fscp%' OR LOWER(process) LIKE '%close process%' THEN 'Financial Statement Close Process (FSCP)'
+       WHEN LOWER(process) LIKE '%bank%' OR LOWER(process) LIKE '%treasury%' THEN 'Bank & Treasury'
+       WHEN LOWER(process) LIKE '%fixed asset%' THEN 'Fixed Asset Management'
+       WHEN LOWER(process) LIKE '%information technology%' OR LOWER(process) LIKE '%itgc%' OR LOWER(process) LIKE '%general control%' THEN 'Information Technology & General Controls'
+       WHEN LOWER(process) LIKE '%project%' THEN 'Project Management'
+       WHEN LOWER(process) LIKE '%sap%' OR LOWER(process) LIKE '%security review%' THEN 'SAP Security Review'
+       WHEN LOWER(process) LIKE '%ehs%' OR LOWER(process) LIKE '%environment%' OR LOWER(process) LIKE '%health%' OR LOWER(process) LIKE '%safety%' THEN 'EHS'
+       WHEN LOWER(process) LIKE '%expense%' THEN 'Specific Expense Management review'
+       WHEN LOWER(process) LIKE '%subsidiar%' THEN 'Subsidiaries'
+       ELSE 'Subsidiaries'
+     END
+   WHERE process IS NULL
+      OR process NOT IN (
+        'Procure to Pay','Inventory Management','Order to cash',
+        'Production Planning & Quality Control','HR & Payroll',
+        'Compliance Monitoring Mechanism','Financial Statement Close Process (FSCP)',
+        'Bank & Treasury','Fixed Asset Management',
+        'Information Technology & General Controls','Project Management',
+        'SAP Security Review','EHS','Specific Expense Management review',
+        'Subsidiaries'
+      );
 `);
 
     // Ensure Auditors table exists (email + processes JSON or delimited; "*" => all)
@@ -832,15 +954,15 @@ const normStatus = (s) => {
   if (status === "to be received" || status.includes("to be"))
     return "To Be Received";
   if (status === "partially received" || status.includes("partially"))
-    return "Partially Received";
+    return "To Be Received";
   if (
     status === "received" ||
+    status === "closed" ||
+    status === "accepted" ||
+    status.includes("resolv") ||
     (status.includes("received") && !status.includes("to be"))
   )
     return "Received";
-  if (status === "closed") return "Closed";
-  if (status.includes("progress")) return "In Progress";
-  if (status.includes("resolv")) return "Resolved";
   return "To Be Received";
 };
 
@@ -1299,7 +1421,7 @@ function parseProcesses(val) {
 const getStaticAuditors = () =>
   [...new Set([...AUDITOR_EMAILS, ...STATIC_AUDITORS])].map((x) =>
     x.toLowerCase()
-  );
+  ).filter((email) => !RESTRICTED_AUDITOR_EMAILS.has(email));
 
 async function listAuditorsFromDb() {
   const connection = await auditPool.getConnection();
@@ -1317,17 +1439,19 @@ async function listAuditorsFromDb() {
 
 function processesMatch(allowedList, proc) {
   if (!allowedList?.length) return false;
+  const normalizedProc = normProcess(proc);
   return allowedList.some(
     (p) =>
       p === "*" ||
       /^all$/i.test(p) ||
-      (proc && String(p).toLowerCase() === String(proc).toLowerCase())
+      (proc && normProcess(p).toLowerCase() === normalizedProc.toLowerCase())
   );
 }
 
 async function isGlobalAuditor(email) {
   const em = String(email || "").toLowerCase();
   if (!em) return false;
+  if (RESTRICTED_AUDITOR_EMAILS.has(em)) return false;
   if (getStaticAuditors().includes(em)) return true;
   const dyn = await listAuditorsFromDb();
   return dyn.some((r) => r.email === em && processesMatch(r.processes, "*"));
@@ -1340,9 +1464,12 @@ async function isAuditorEmail(email) {
     .trim()
     .toLowerCase();
   if (!em) return false;
+  if (RESTRICTED_AUDITOR_EMAILS.has(em)) return false;
 
   // ✅ Respect env/static allowlists first
   if (getStaticAuditors().includes(em)) return true;
+  if (Object.prototype.hasOwnProperty.call(PROCESS_SCOPED_STATIC_AUDITORS, em))
+    return true;
 
   // ✅ Then allow anyone present in dbo.Auditors
   try {
@@ -1400,9 +1527,16 @@ async function isApproverEmail(email) {
 // CMD-F ANCHOR: auditor-check-logic
 async function getAuditorsForProcess(procOpt = null) {
   const out = new Set(getStaticAuditors());
+  const proc = procOpt ? normProcess(procOpt) : null;
+  for (const [email, processes] of Object.entries(PROCESS_SCOPED_STATIC_AUDITORS)) {
+    const em = String(email).toLowerCase();
+    if (RESTRICTED_AUDITOR_EMAILS.has(em)) continue;
+    if (!proc || processesMatch(processes, proc)) out.add(em);
+  }
   const dyn = await listAuditorsFromDb();
   for (const r of dyn) {
-    if (!procOpt || processesMatch(r.processes, procOpt)) out.add(r.email);
+    if (RESTRICTED_AUDITOR_EMAILS.has(r.email)) continue;
+    if (!proc || processesMatch(r.processes, proc)) out.add(r.email);
   }
   return [...out];
 }
@@ -1719,8 +1853,7 @@ app.post("/api/audit-issues/:id/unlock", async (req, res) => {
     };
     const updatedEvidence = [...currentEvidence, unlockEntry];
 
-    const nextStatus =
-      row.currentStatus === "Closed" ? "Closed" : "To Be Received";
+    const nextStatus = "To Be Received";
     await connection.execute(
       `UPDATE dbo.AuditIssues
            SET evidenceStatus = ?, currentStatus = ?, evidenceReceived = ?, updatedAt = GETDATE()
@@ -1743,7 +1876,7 @@ app.post("/api/audit-issues/:id/unlock", async (req, res) => {
     updated.isLocked = isAccepted(updated.evidenceStatus);
 
     // Notify
-    const cc = getAuditorList();
+    const cc = await getAuditorsForProcess(updated.process);
     const to = uniqEmails(
       updated.personResponsible,
       updated.approver,
@@ -1793,6 +1926,14 @@ app.get("/api/auditors", async (_req, res) => {
       processes: ["*"],
       source: "static",
     }));
+    const scopedRows = Object.entries(PROCESS_SCOPED_STATIC_AUDITORS).map(
+      ([email, processes]) => ({
+        id: null,
+        email,
+        processes,
+        source: "static-scoped",
+      })
+    );
     const dbRowsRaw = await listAuditorsFromDb();
     const dbRows = dbRowsRaw.map((r) => ({
       id: r.id,
@@ -1802,7 +1943,8 @@ app.get("/api/auditors", async (_req, res) => {
     }));
     // de-dup on email, prefer DB rows over env/static
     const merged = new Map();
-    [...dbRows, ...envRows, ...staticRows].forEach((r) => {
+    [...dbRows, ...scopedRows, ...envRows, ...staticRows].forEach((r) => {
+      if (RESTRICTED_AUDITOR_EMAILS.has(String(r.email).toLowerCase())) return;
       if (!merged.has(r.email)) merged.set(r.email, r);
     });
     res.json(
@@ -1826,6 +1968,9 @@ app.post("/api/auditors", async (req, res) => {
     const email = normalizeToEmail(req.body?.email || "");
     const processes = parseProcesses(req.body?.processes || ["*"]);
     if (!email) return res.status(400).json({ error: "email required" });
+    if (RESTRICTED_AUDITOR_EMAILS.has(email.toLowerCase())) {
+      return res.status(403).json({ error: "This user is restricted from auditor access." });
+    }
     const procs = processes.length ? processes : ["*"];
     const connection = await auditPool.getConnection();
     await connection.execute(
@@ -1854,6 +1999,9 @@ app.put("/api/auditors/:id", async (req, res) => {
     const processes = parseProcesses(req.body?.processes || ["*"]);
     if (!id) return res.status(400).json({ error: "id required" });
     if (!email) return res.status(400).json({ error: "email required" });
+    if (RESTRICTED_AUDITOR_EMAILS.has(email.toLowerCase())) {
+      return res.status(403).json({ error: "This user is restricted from auditor access." });
+    }
     const procs = processes.length ? processes : ["*"];
     const connection = await auditPool.getConnection();
     await connection.execute(
@@ -2473,7 +2621,7 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
 
     const fiscalYear = body.fiscalYear || "";
     const date = formatDate(body.date) || formatDate(new Date());
-    const process = body.process || "";
+    const process = normProcess(body.process);
     const entityCovered = body.entityCovered || "";
     const observation = body.observation || "";
     const riskLevel = normRiskLevel(body.riskLevel);
@@ -2532,7 +2680,7 @@ app.post("/api/audit-issues", memoryUpload.any(), async (req, res) => {
     } catch {}
     // 📧 New Issue created — notify auditors (CC PR/Approver/CXO)
     try {
-      const cc = getAuditorList();
+      const cc = await getAuditorsForProcess(created.process);
       const to = uniqEmails(personResponsible, approver, cxoResponsible);
       const subject = `${APP_NAME}, New Audit Issue Created (${created.serialNumber})`;
       const html = emailTemplate({
@@ -2594,6 +2742,8 @@ app.get("/api/audit-issues/export", async (req, res) => {
         r.evidenceStatus || (ev.length ? "Submitted" : null);
       return {
         ...r,
+        process: normProcess(r.process),
+        currentStatus: normStatus(r.currentStatus),
         evidenceReceived: ev,
         annexure: ax,
         evidenceStatus: effectiveEvidenceStatus,
@@ -2745,6 +2895,8 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
 
       return {
         ...r,
+        process: normProcess(r.process),
+        currentStatus: normStatus(r.currentStatus),
         evidenceReceived: ev,
         annexure: ax,
         evidenceStatus: effectiveEvidenceStatus,
@@ -2821,12 +2973,12 @@ app.get("/api/audit-issues/export-filtered", async (req, res) => {
       const max = new Date(today.getTime() + days * msDay);
       filtered = scoped.filter((r) => {
         const d = timelineDateOnly(r.timeline);
-        return d && d >= today && d <= max;
+        return d && d >= today && d <= max && r.currentStatus !== "Received" && r.evidenceStatus !== "Accepted";
       });
     } else if (mode === "overdue") {
       filtered = scoped.filter((r) => {
         const d = timelineDateOnly(r.timeline);
-        return d && d < today;
+        return d && d < today && r.currentStatus !== "Received" && r.evidenceStatus !== "Accepted";
       });
     } else if (mode === "recent") {
       // "recent" = created in last N days
@@ -2982,7 +3134,7 @@ app.post(
       for (const row of dataRows) {
         try {
           const fiscalYear = val(row, "fiscalyear", "");
-          const process = val(row, "process", "");
+          const process = normProcess(val(row, "process", ""));
           const entityCovered = val(row, "entitycovered", "");
           const observation = val(row, "observation", "");
           const riskLevelRaw = val(row, "risklevel", "");
@@ -3175,6 +3327,8 @@ app.get("/api/audit-issues", async (req, res) => {
       const isLocked = isAccepted(effectiveEvidenceStatus);
       return {
         ...r,
+        process: normProcess(r.process),
+        currentStatus: normStatus(r.currentStatus),
         evidenceReceived: ev,
         annexure: ax,
         evidenceStatus: effectiveEvidenceStatus,
@@ -3272,16 +3426,15 @@ app.post(
         return res.status(423).json({ error: "Issue is locked (Accepted)." });
       }
 
-      // ✅ Server-side permission: only PR or auditors can upload evidence
+      // Server-side permission: evidence integrity requires PR-only uploads.
       const prList = toEmails(row.personResponsible).map((e) =>
         normalizeToEmail(e).toLowerCase()
       );
       const isPR = prList.includes(uploadedBy.toLowerCase());
-      const isAud = await isAuditorEmail(uploadedBy);
 
-      if (!isPR && !isAud) {
+      if (!isPR) {
         return res.status(403).json({
-          error: "Only Person Responsible or auditors can upload evidence.",
+          error: "Only the Person Responsible can upload audit evidence.",
         });
       }
 
@@ -3327,8 +3480,7 @@ app.post(
       const updatedEvidence = [...currentEvidence, ...newEntries];
 
       const nextEvidenceStatus = "Submitted";
-      const nextCurrentStatus =
-        row.currentStatus === "Closed" ? "Closed" : "To Be Received";
+      const nextCurrentStatus = "To Be Received";
 
       await connection.execute(
         `UPDATE dbo.AuditIssues
@@ -3347,7 +3499,7 @@ app.post(
 
       const caption = `${row.serialNumber} – ${row.process} / ${row.entityCovered}`;
       const attachmentsCount = (req.files || []).length;
-      const cc = getAuditorList();
+      const cc = await getAuditorsForProcess(row.process);
       const to = uniqEmails(
         row.personResponsible,
         row.approver,
@@ -3522,7 +3674,7 @@ app.post("/api/comments", async (req, res) => {
     );
 
     // Email (TO auditors, CC stakeholders)
-    const cc = getAuditorList();
+    const cc = await getAuditorsForProcess(row.process);
     const to = uniqEmails(
       row.personResponsible,
       row.approver,
@@ -3652,15 +3804,15 @@ async function notifyPendingHandler(req, res) {
       return res.status(403).json({ error: "Only auditors can send nudges." });
     }
 
-    // Load all "pending" issues (not Accepted, not Closed)
+    // Load all "pending" issues (not Accepted, not Received)
     const connection = await auditPool.getConnection();
     const [rows] = await connection.execute(`
       SELECT id, serialNumber, process, entityCovered, observation, timeline,
-             currentStatus, evidenceStatus,
+             currentStatus, evidenceStatus, actionRequired,
              personResponsible, approver, cxoResponsible
         FROM dbo.AuditIssues
        WHERE (evidenceStatus IS NULL OR evidenceStatus <> 'Accepted')
-         AND (currentStatus  IS NULL OR currentStatus  <> 'Closed')
+         AND (currentStatus  IS NULL OR currentStatus  <> 'Received')
        ORDER BY timeline ASC, createdAt DESC;
     `);
 
@@ -3704,6 +3856,7 @@ async function notifyPendingHandler(req, res) {
           timeline: row.timeline,
           currentStatus: row.currentStatus,
           evidenceStatus: row.evidenceStatus,
+          actionRequired: row.actionRequired,
           roles: new Set([role]),
         });
       }
@@ -3801,6 +3954,7 @@ async function notifyPendingHandler(req, res) {
         title: `📝 ${APP_NAME}: Pending Audit Actions`,
         paragraphs: [
           `You are listed as <b>Person Responsible</b>, <b>Approver</b>, or <b>CXO</b> on the following <b>${count}</b> open issue(s) that are <b>not accepted</b>.`,
+          `<b>Action Required:</b> Please review the action required for each listed issue and update CAM.`,
           `Please review and take action in the portal.`,
           table,
         ],
@@ -3874,6 +4028,7 @@ app.get("/api/sso/debug", (req, res) => {
 app.put("/api/audit-issues/:id/review", async (req, res) => {
   const issueId = req.params.id;
   const { evidenceStatus, reviewComments } = req.body;
+  const actor = normalizeToEmail(req.body?.actor || req.query?.actor || "");
 
   if (
     !["Accepted", "Insufficient", "Partially Accepted"].includes(evidenceStatus)
@@ -3885,25 +4040,56 @@ app.put("/api/audit-issues/:id/review", async (req, res) => {
   }
 
   try {
+    if (!actor) return res.status(400).json({ error: "Missing actor" });
+    if (!(await isAuditorEmail(actor))) {
+      return res.status(403).json({ error: "Only auditors can review evidence." });
+    }
     const connection = await auditPool.getConnection();
+    const [beforeRows] = await connection.execute(
+      `SELECT evidenceReceived FROM dbo.AuditIssues WHERE id = ?`,
+      [issueId]
+    );
+    if (!beforeRows.length) {
+      return res.status(404).json({ error: "Audit issue not found" });
+    }
+    let evidenceTrail = [];
+    try {
+      evidenceTrail = JSON.parse(beforeRows[0].evidenceReceived || "[]");
+      if (!Array.isArray(evidenceTrail)) evidenceTrail = [];
+    } catch {
+      evidenceTrail = [];
+    }
+    if (String(reviewComments || "").trim()) {
+      evidenceTrail.push({
+        id: Date.now() + "-review-" + Math.random().toString(36).substr(2, 9),
+        fileName: "Auditor Review",
+        fileType: "text/plain",
+        fileSize: String(reviewComments || "").length,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: actor,
+        content: String(reviewComments || "").trim(),
+        reviewStatus: evidenceStatus,
+      });
+    }
 
     // adjust currentStatus based on evidenceStatus
     const updateFields = [
       "evidenceStatus = ?",
       "reviewComments = ?",
+      "evidenceReceived = ?",
       "updatedAt = GETDATE()",
     ];
     if (evidenceStatus === "Accepted") {
       updateFields.push("currentStatus = 'Received'");
     } else if (evidenceStatus === "Partially Accepted") {
-      updateFields.push("currentStatus = 'Partially Received'");
+      updateFields.push("currentStatus = 'To Be Received'");
     } else {
       updateFields.push("currentStatus = 'To Be Received'");
     }
 
     await connection.execute(
       `UPDATE dbo.AuditIssues SET ${updateFields.join(", ")} WHERE id = ?`,
-      [evidenceStatus, reviewComments, issueId]
+      [evidenceStatus, reviewComments, JSON.stringify(evidenceTrail), issueId]
     );
 
     const [updatedRows] = await connection.execute(
@@ -3916,7 +4102,7 @@ app.put("/api/audit-issues/:id/review", async (req, res) => {
     const updated = updatedRows[0];
 
     // mail — TO auditors, CC stakeholders
-    const cc = getAuditorList();
+    const cc = await getAuditorsForProcess(updated.process);
     const to = uniqEmails(
       updated.personResponsible,
       updated.approver,
@@ -4088,7 +4274,12 @@ app.put(
       "startMonth",
       "endMonth",
     ];
-    for (const k of allowed) if (k in fields) set(k, fields[k]);
+    for (const k of allowed) {
+      if (!(k in fields)) continue;
+      if (k === "currentStatus") set(k, normStatus(fields[k]));
+      else if (k === "process") set(k, normProcess(fields[k]));
+      else set(k, fields[k]);
+    }
 
     // ⬅️ if we actually appended annexures, persist them
     if (annexureUpdated) {
@@ -4145,7 +4336,7 @@ app.put(
         });
 
         if (changed.length) {
-          const cc = getAuditorList();
+          const cc = await getAuditorsForProcess(after.process);
           const to = uniqEmails(
             after.personResponsible,
             after.approver,
@@ -4372,7 +4563,7 @@ app.get("/api/reports/action-taken-status", async (req, res) => {
       const isClosed =
         String(r.currentStatus || "")
           .trim()
-          .toLowerCase() === "closed";
+          .toLowerCase() === "received";
 
       // total
       bucket.total[risk]++;
@@ -4476,7 +4667,7 @@ app.get("/api/reports/internal-audit-atr-status", async (req, res) => {
       const isClosed =
         String(r.currentStatus || "")
           .trim()
-          .toLowerCase() === "closed";
+          .toLowerCase() === "received";
       if (isClosed) continue; // pending action points = OPEN only (matches screenshot)
 
       const primary = toEmails(r.cxoResponsible)[0] || "Unassigned";
@@ -4632,7 +4823,7 @@ app.post("/api/audit-issues/:id/close", async (req, res) => {
   try {
     const connection = await auditPool.getConnection();
     await connection.execute(
-      "UPDATE dbo.AuditIssues SET currentStatus = 'Closed', updatedAt = GETDATE() WHERE id = ?",
+      "UPDATE dbo.AuditIssues SET currentStatus = 'Received', updatedAt = GETDATE() WHERE id = ?",
       [id]
     );
     res.json({ success: true });
@@ -4718,10 +4909,10 @@ const overdueSentOn = new Map();
 async function runDailyReminders() {
   try {
     const connection = await auditPool.getConnection();
-    // due between today and +3 days inclusive, and not Closed
+    // due between today and +3 days inclusive, and not Received
     const [rows] = await connection.execute(`
             SELECT id, serialNumber, process, entityCovered, observation, timeline,
-                   personResponsible, approver, cxoResponsible, currentStatus
+                   personResponsible, approver, cxoResponsible, currentStatus, actionRequired
       FROM dbo.AuditIssues
       WHERE timeline IS NOT NULL
         AND DATEDIFF(DAY, CONVERT(date, GETDATE()), timeline) BETWEEN 0 AND 3
@@ -4760,14 +4951,14 @@ startDailyReminderTimer();
 async function runDailyReminders() {
   try {
     const connection = await auditPool.getConnection();
-    // due between today and +3 days inclusive, and not Closed
+    // due between today and +3 days inclusive, and not Received
     const [rows] = await connection.execute(`
             SELECT id, serialNumber, process, entityCovered, observation, timeline,
                    personResponsible, approver, cxoResponsible, currentStatus
       FROM dbo.AuditIssues
       WHERE timeline IS NOT NULL
         AND DATEDIFF(DAY, CONVERT(date, GETDATE()), timeline) BETWEEN 0 AND 3
-        AND (currentStatus IS NULL OR currentStatus <> 'Closed')
+        AND (currentStatus IS NULL OR currentStatus <> 'Received')
       ORDER BY timeline ASC
     `);
 
@@ -4789,6 +4980,7 @@ async function runDailyReminders() {
         paragraphs: [
           `<b>Issue:</b> ${buildCaption(r)}`,
           `<b>Observation:</b> ${r.observation || "—"}`,
+          `<b>Action Required:</b> ${r.actionRequired || "Action Required"}`,
           `<b>Due Date:</b> ${r.timeline || "—"}`,
           `<b>Current Status:</b> ${r.currentStatus || "To Be Received"}`,
           `Visit <a href="https://audit.premierenergies.com">audit.premierenergies.com</a> to review.`,
@@ -4825,11 +5017,11 @@ async function runDailyOverdues() {
     // Only overdue, not closed, and NOT Accepted
     const [rows] = await connection.execute(`
       SELECT id, serialNumber, process, entityCovered, observation, timeline,
-             personResponsible, approver, cxoResponsible, currentStatus, evidenceStatus
+             personResponsible, approver, cxoResponsible, currentStatus, evidenceStatus, actionRequired
       FROM dbo.AuditIssues
       WHERE timeline IS NOT NULL
         AND CONVERT(date, timeline) < CONVERT(date, GETDATE())
-        AND (currentStatus IS NULL OR currentStatus <> 'Closed')
+        AND (currentStatus IS NULL OR currentStatus <> 'Received')
         AND (evidenceStatus IS NULL OR evidenceStatus <> 'Accepted')
       ORDER BY timeline ASC
     `);
@@ -4884,6 +5076,7 @@ async function runDailyOverdues() {
         observation: row.observation,
         timeline: row.timeline,
         currentStatus: row.currentStatus,
+        actionRequired: row.actionRequired,
         role,
         daysOver: daysOver(row.timeline),
       });
@@ -4971,6 +5164,7 @@ async function runDailyOverdues() {
           `You have <b>${count}</b> overdue audit observation${
             count === 1 ? "" : "s"
           } where you are marked as <b>Person Responsible</b>, <b>Approver</b> or <b>CXO</b>.`,
+          `<b>Action Required:</b> Please review the action required for each listed observation and update CAM.`,
           `Please review the details below and update the status / upload evidence in the portal.`,
           table,
         ],

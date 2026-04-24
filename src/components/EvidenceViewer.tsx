@@ -20,7 +20,13 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
   title = "Evidence Files"
 }) => {
   const downloadFile = (evidenceItem: Evidence) => {
-    if (evidenceItem.content) {
+    if (evidenceItem.path) {
+      const params = new URLSearchParams({
+        path: evidenceItem.path.replace(/^\.*\/?/, ""),
+        name: evidenceItem.fileName || "download",
+      });
+      window.location.href = `${window.location.origin}/api/files/download?${params.toString()}`;
+    } else if (evidenceItem.content) {
       const blob = new Blob([evidenceItem.content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -80,7 +86,7 @@ export const EvidenceViewer: React.FC<EvidenceViewerProps> = ({
                       <div className="flex items-center space-x-4 text-sm text-gray-500 mt-1">
                         <div className="flex items-center space-x-1">
                           <Calendar className="h-3 w-3" />
-                          <span>{new Date(item.uploadedAt).toLocaleDateString()}</span>
+                          <span>{new Date(item.uploadedAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })}</span>
                         </div>
                         <div className="flex items-center space-x-1">
                           <User className="h-3 w-3" />

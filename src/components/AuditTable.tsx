@@ -56,6 +56,16 @@ function toAbsUrl(path?: string | null) {
   return `${window.location.origin}/${cleaned}`;
 }
 
+function toDownloadUrl(path?: string | null, name?: string | null) {
+  if (!path) return null;
+  const cleaned = path.replace(/^\.*\/?/, "");
+  const params = new URLSearchParams({
+    path: cleaned,
+    name: name || "download",
+  });
+  return `${window.location.origin}/api/files/download?${params.toString()}`;
+}
+
 function getQuarterLabel(date: string | Date | undefined | null): string {
   if (!date) return "—";
   const parsed = new Date(date);
@@ -74,14 +84,14 @@ const formatDateTime = (value?: string | null) => {
   if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString();
+  return parsed.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 };
 
 const formatDate = (value?: string | null) => {
   if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString();
+  return parsed.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
 };
 
 const getRiskTone = (risk: string) =>
@@ -96,11 +106,13 @@ const getRiskTone = (risk: string) =>
 const getStatusTone = (status: string) =>
   status === "Received"
     ? "bg-emerald-100 text-emerald-700 border-emerald-200"
-    : status === "Partially Received"
-    ? "bg-amber-100 text-amber-700 border-amber-200"
-    : status === "Closed"
-    ? "bg-slate-200 text-slate-700 border-slate-300"
     : "bg-blue-100 text-blue-700 border-blue-200";
+
+const isAcceptedEvidence = (issue: AuditIssue) =>
+  String(issue.evidenceStatus || "").toLowerCase() === "accepted";
+
+const isOpenIssue = (issue: AuditIssue) =>
+  !isAcceptedEvidence(issue) && issue.currentStatus !== "Received";
 
 const compare = (a: unknown, b: unknown) => {
   if (typeof a === "string" && typeof b === "string") {
@@ -145,7 +157,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
   const [viewerIssueId, setViewerIssueId] = useState<string | null>(null);
 
   const commentRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
-  const { comments: storedComments = [], addComment } = useAuditStorage() as any;
+  const { comments: storedComments = [] } = useAuditStorage() as any;
 
   const fetchIssues = async () => {
     if (isControlled) return;
@@ -266,7 +278,13 @@ export const AuditTable: React.FC<AuditTableProps> = ({
         (String(evidenceItem?.fileName || "").toLowerCase() === "comment" ||
           String(evidenceItem?.fileName || "")
             .toLowerCase()
-            .includes("justification"));
+            .includes("justification") ||
+          String(evidenceItem?.fileName || "")
+            .toLowerCase()
+            .includes("review") ||
+          String(evidenceItem?.fileName || "")
+            .toLowerCase()
+            .includes("comment"));
 
       if (!isText) continue;
 
@@ -300,8 +318,15 @@ export const AuditTable: React.FC<AuditTableProps> = ({
     const term = searchTerm.toLowerCase();
 
     const filtered = issues.filter((issue) => {
+      const issueNumber = String(issue.serialNumber ?? "").toLowerCase();
+      const issueNumberMatch =
+        !!term &&
+        (issueNumber.includes(term.replace(/^#/, "")) ||
+          `#${issueNumber}`.includes(term) ||
+          `issue ${issueNumber}`.includes(term));
       const valuesMatch =
         !term ||
+        issueNumberMatch ||
         Object.values(issue).some((value) =>
           String(value ?? "")
             .toLowerCase()
@@ -317,7 +342,10 @@ export const AuditTable: React.FC<AuditTableProps> = ({
         );
 
       const statusMatch =
-        filterStatus === "all" || issue.currentStatus === filterStatus;
+        filterStatus === "all" ||
+        (filterStatus === "open" && isOpenIssue(issue)) ||
+        (filterStatus === "accepted" && isAcceptedEvidence(issue)) ||
+        issue.currentStatus === filterStatus;
       const riskMatch = filterRisk === "all" || issue.riskLevel === filterRisk;
       const yearMatch =
         filterFiscalYear === "all" || issue.fiscalYear === filterFiscalYear;
@@ -455,11 +483,9 @@ export const AuditTable: React.FC<AuditTableProps> = ({
 
   const summary = useMemo(() => {
     const total = expandedRows.length;
-    const open = expandedRows.filter(
-      ({ issue }) => issue.currentStatus !== "Closed"
-    ).length;
-    const awaitingEvidence = expandedRows.filter(({ issue }) =>
-      ["To Be Received", "In Progress"].includes(issue.currentStatus)
+    const open = expandedRows.filter(({ issue }) => isOpenIssue(issue)).length;
+    const awaitingEvidence = expandedRows.filter(
+      ({ issue }) => issue.currentStatus === "To Be Received"
     ).length;
     const locked = expandedRows.filter(
       ({ issue }) =>
@@ -734,7 +760,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                 <Input
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Search issues, comments, owners, observations..."
+                  placeholder="Search issue number, comments, owners, observations..."
                   className="h-12 rounded-2xl border-slate-200 bg-slate-50 pl-11"
                 />
               </div>
@@ -766,11 +792,10 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                 className="h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700"
               >
                 <option value="all">All statuses</option>
+                <option value="open">Open</option>
+                <option value="accepted">Accepted</option>
                 <option value="Received">Received</option>
-                <option value="Partially Received">Partially Received</option>
                 <option value="To Be Received">To Be Received</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Closed">Closed</option>
               </select>
               <select
                 value={filterRisk}
@@ -886,6 +911,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
             return (
               <Card
                 key={`${issue.id}:${subIndex}`}
+                id={`issue-${issue.id}`}
                 className="overflow-hidden rounded-[28px] border-slate-200/80 bg-white/95 shadow-[0_22px_45px_-36px_rgba(15,23,42,0.45)]"
               >
                 <CardContent className="p-0">
@@ -1023,9 +1049,9 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                             variant="secondary"
                             className="h-11 justify-between rounded-2xl"
                             onClick={() => handleManualClosure(issue.id)}
-                            disabled={issue.currentStatus === "Closed" || locked}
+                            disabled={issue.currentStatus === "Received" || locked}
                             title={
-                              issue.currentStatus === "Closed"
+                              issue.currentStatus === "Received"
                                 ? "Already closed"
                                 : locked
                                 ? "Locked after acceptance"
@@ -1187,7 +1213,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
 
                         <div className="mt-4 space-y-2">
                           {annexureLinks.map((file, index) => {
-                            const url = toAbsUrl(file.path);
+                            const url = toDownloadUrl(file.path, file.name);
                             return (
                               <a
                                 key={`${file.name}-${index}`}
@@ -1209,7 +1235,7 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                           })}
 
                           {nonTextEvidence.slice(0, 3).map((file: any, index: number) => {
-                            const url = toAbsUrl(file.path);
+                            const url = toDownloadUrl(file.path, file.fileName);
                             return (
                               <a
                                 key={`${file.fileName}-${index}`}
@@ -1306,20 +1332,30 @@ export const AuditTable: React.FC<AuditTableProps> = ({
                             <div className="mt-3 flex justify-end">
                               <Button
                                 className="rounded-2xl bg-slate-950 text-white hover:bg-slate-800"
-                                onClick={() => {
+                                onClick={async () => {
                                   const element = commentRefs.current[issue.id];
                                   const value = (element?.value || "").trim();
                                   if (!value) return;
 
-                                  addComment?.({
-                                    id: `${issue.id}-${Date.now()}`,
-                                    auditIssueId: issue.id,
-                                    userId: viewer,
-                                    userName: viewer,
-                                    content: value,
-                                    type: "comment",
-                                    createdAt: new Date().toISOString(),
-                                  });
+                                  try {
+                                    const res = await fetch(`${API_BASE_URL}/comments`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({
+                                        issueId: issue.id,
+                                        content: value,
+                                        actor: viewer,
+                                      }),
+                                    });
+                                    if (!res.ok) {
+                                      const payload = await res.json().catch(() => ({}));
+                                      throw new Error((payload as any)?.error || "Failed to post comment");
+                                    }
+                                    if (!isControlled) await fetchIssues();
+                                  } catch (err: any) {
+                                    alert(err?.message || "Failed to post comment.");
+                                    return;
+                                  }
 
                                   if (element) element.value = "";
                                 }}

@@ -1,10 +1,6 @@
 type AuditStatus =
   | "To Be Received"
-  | "Received"
-  | "Partially Received"
-  | "In Progress"
-  | "Resolved"
-  | "Closed";
+  | "Received";
 
 export interface AuditIssue {
   id: string;
@@ -45,6 +41,7 @@ export interface Evidence {
   uploadedBy: string;
   content?: string;
   base64Data?: string;
+  path?: string;
 }
 
 export interface User {

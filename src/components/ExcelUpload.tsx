@@ -34,7 +34,7 @@ export const ExcelUpload: React.FC = () => {
     "cxoResponsible", // allow multiple
     "coOwner", // optional, allow multiple
     "timeline", // ISO (YYYY-MM-DD) or Excel date
-    "currentStatus", // Received | Partially Received | To Be Received
+    "currentStatus", // Received | To Be Received (Partially Received imports as To Be Received)
     "startMonth", // coverage start (e.g., Jan)
     "endMonth", // coverage end (e.g., Mar)
     "reviewComments",
@@ -62,7 +62,7 @@ export const ExcelUpload: React.FC = () => {
         "cxo@example.com",
         "co-owner@example.com",
         "2024-12-01",
-        "Partially Received",
+        "To Be Received",
         "Jan",
         "Mar",
         "Reviewed and verified",
@@ -328,7 +328,7 @@ export const ExcelUpload: React.FC = () => {
                   <TableCell>cxo@example.com</TableCell>
                   <TableCell>co-owner@example.com</TableCell>
                   <TableCell>2024-12-01</TableCell>
-                  <TableCell>Partially Received</TableCell>
+                  <TableCell>To Be Received</TableCell>
                   <TableCell>Jan</TableCell>
                   <TableCell>Mar</TableCell>
                   <TableCell>Reviewed and verified</TableCell>

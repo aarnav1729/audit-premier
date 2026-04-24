@@ -46,6 +46,8 @@ export const AuditorDashboard: React.FC = () => {
   const { user } = useAuth();
 
   const [reloadKey, setReloadKey] = useState(0);
+  const initialTab =
+    new URLSearchParams(window.location.search).get("tab") || "analytics";
 
   const isAuditor = (user?.role || "").toLowerCase() === "auditor";
   const viewerEmail = (user?.email || "").toLowerCase();
@@ -170,6 +172,7 @@ export const AuditorDashboard: React.FC = () => {
           body: JSON.stringify({
             evidenceStatus,
             reviewComments,
+            actor: viewerEmail,
           }),
         }
       );
@@ -350,7 +353,7 @@ export const AuditorDashboard: React.FC = () => {
       </section>
 
       {/* Analytics first, then Audit Issues, then Excel Upload */}
-      <Tabs defaultValue="analytics" className="space-y-4">
+      <Tabs defaultValue={initialTab} className="space-y-4">
         <TabsList
           className={`grid w-full rounded-2xl bg-white/85 p-1 shadow-sm ${
             isAuditor ? "max-w-5xl grid-cols-5" : "max-w-3xl grid-cols-3"

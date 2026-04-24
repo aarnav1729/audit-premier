@@ -37,6 +37,16 @@ function toAbsUrl(p?: string | null) {
   return `${window.location.origin}/${cleaned}`;
 }
 
+function toDownloadUrl(p?: string | null, name?: string | null) {
+  if (!p) return null;
+  const cleaned = p.replace(/^\.*\/?/, "");
+  const params = new URLSearchParams({
+    path: cleaned,
+    name: name || "download",
+  });
+  return `${window.location.origin}/api/files/download?${params.toString()}`;
+}
+
 function isImage(mime?: string | null, name?: string | null) {
   if (mime && mime.startsWith("image/")) return true;
   const n = (name || "").toLowerCase();
@@ -73,6 +83,9 @@ export const DocumentViewer: React.FC<Props> = ({
 
   // Build URLs for download / preview
   const fileUrl = selected ? toAbsUrl(selected.path || undefined) : null;
+  const downloadUrl = selected
+    ? toDownloadUrl(selected.path || undefined, selected.name || selected.fileName)
+    : null;
   // Heuristic: evidence entries have fileName/content (annexure entries don't)
   const isEvidence = !!(selected?.fileName || selected?.content);
 
@@ -102,7 +115,7 @@ export const DocumentViewer: React.FC<Props> = ({
                   </li>
                 )}
                 {normalized.map((f, i) => {
-                  const url = toAbsUrl(f.path || undefined);
+                  const url = toDownloadUrl(f.path || undefined, f.name || f.fileName);
                   return (
                     <li
                       key={`${f.id ?? i}-${f.name}`}
@@ -117,7 +130,9 @@ export const DocumentViewer: React.FC<Props> = ({
                           <div className="font-medium truncate">{f.name}</div>
                           {f.uploadedAt && (
                             <div className="text-xs text-gray-500">
-                              {new Date(f.uploadedAt).toLocaleString()}
+                              {new Date(f.uploadedAt).toLocaleString("en-IN", {
+                                timeZone: "Asia/Kolkata",
+                              })}
                             </div>
                           )}
                           {!f.path && !f.content && (
@@ -189,7 +204,7 @@ export const DocumentViewer: React.FC<Props> = ({
                     <div className="text-sm text-gray-600">
                       No inline preview for this file type.{" "}
                       <a
-                        href={fileUrl}
+                        href={downloadUrl || fileUrl}
                         download
                         target="_blank"
                         rel="noreferrer"
@@ -225,7 +240,7 @@ export const DocumentViewer: React.FC<Props> = ({
                   )}
                 {fileUrl && (
                   <a
-                    href={fileUrl}
+                    href={downloadUrl || fileUrl}
                     target="_blank"
                     rel="noreferrer"
                     download

@@ -160,11 +160,11 @@ const splitList = (s: string | undefined | null) =>
     .map((x) => x.trim())
     .filter(Boolean);
 
-/** Treat “Accepted” as “Closed” for analytics */
+/** Treat “Received” or evidence “Accepted” as completed for analytics */
 const isClosedEquivalent = (i: AuditIssue) => {
   const status = String(i.currentStatus || "").toLowerCase();
   const ev = String((i as any).evidenceStatus || "").toLowerCase();
-  return status === "closed" || status === "accepted" || ev === "accepted";
+  return status === "received" || status === "accepted" || ev === "accepted";
 };
 
 /** Shallow + nested date key finder by regex (depth-limited) */
@@ -426,6 +426,11 @@ function PieChartBox({
         stroke: am5.color(0xffffff),
         strokeOpacity: 1,
         strokeWidth: 1,
+        cursorOverStyle: "pointer",
+      });
+      series.slices.template.events.on("click", (event) => {
+        const category = (event.target.dataItem?.dataContext as any)?.name;
+        if (category) onSelect?.(String(category));
       });
       series.labels.template.setAll({
         text: "{category}",
@@ -482,7 +487,7 @@ function PieChartBox({
         chart?.dispose();
       } catch {}
     };
-  }, [rootRef, data, colors, innerRadiusPct]);
+  }, [rootRef, data, colors, innerRadiusPct, onSelect]);
 
   return (
     <Card>
@@ -505,11 +510,13 @@ function BarChartBox({
   data,
   height = 300,
   angleLabels = false,
+  onSelect,
 }: {
   title: string;
   data: Array<{ name: string; value: number }>;
   height?: number;
   angleLabels?: boolean;
+  onSelect?: (category: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useAmRoot(containerRef);
@@ -580,6 +587,11 @@ function BarChartBox({
       series.columns.template.setAll({
         cornerRadiusTL: 4,
         cornerRadiusTR: 4,
+        cursorOverStyle: "pointer",
+      });
+      series.columns.template.events.on("click", (event) => {
+        const category = (event.target.dataItem?.dataContext as any)?.name;
+        if (category) onSelect?.(String(category));
       });
 
       xAxis.data.setAll(data ?? []);
@@ -601,7 +613,7 @@ function BarChartBox({
         chart?.dispose();
       } catch {}
     };
-  }, [rootRef, data, angleLabels]);
+  }, [rootRef, data, angleLabels, onSelect]);
 
   return (
     <Card>
@@ -899,6 +911,13 @@ function Analytics({
   const [apiIssues, setApiIssues] = useState<AuditIssue[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [hiddenProcesses, setHiddenProcesses] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [drilldown, setDrilldown] = useState<{
+    label: string;
+    predicate: (issue: AuditIssue) => boolean;
+  } | null>(null);
 
   useEffect(() => setMounted(true), []);
 
@@ -1006,17 +1025,33 @@ function Analytics({
     );
   }, [mode, propIssues, storageIssues, apiIssues]);
 
+  const allProcesses = useMemo(
+    () =>
+      Array.from(new Set(auditIssues.map((i) => i.process || "—")))
+        .filter(Boolean)
+        .sort(),
+    [auditIssues]
+  );
+  const visibleIssues = useMemo(
+    () => auditIssues.filter((issue) => !hiddenProcesses.has(issue.process || "—")),
+    [auditIssues, hiddenProcesses]
+  );
+  const chartIssues = useMemo(
+    () => (drilldown ? visibleIssues.filter(drilldown.predicate) : visibleIssues),
+    [visibleIssues, drilldown]
+  );
+
   // Safe to return after ALL hooks above
   if (loading) return <div className="p-6 text-center">Loading analytics…</div>;
   if (error) return <div className="p-6 text-center text-red-500">{error}</div>;
 
   /* --------------------------- Metrics & Datasets -------------------------- */
 
-  // Completion = Closed OR Accepted; Open = not (Closed or Accepted)
-  const totalIssues = auditIssues.length;
-  const closedIssues = auditIssues.filter((i) => isClosedEquivalent(i)).length;
+  // Completion = Received OR Accepted; Open = everything else.
+  const totalIssues = chartIssues.length;
+  const closedIssues = chartIssues.filter((i) => isClosedEquivalent(i)).length;
   const openIssues = totalIssues - closedIssues;
-  const highRiskIssues = auditIssues.filter(
+  const highRiskIssues = chartIssues.filter(
     (i) => normalizeRisk(i.riskLevel) === "high"
   ).length;
   const completionRate =
@@ -1024,7 +1059,7 @@ function Analytics({
 
   // Status distribution (all statuses, shown as-is)
   const statusCounts = new Map<string, number>();
-  for (const i of auditIssues) {
+  for (const i of chartIssues) {
     const s = (i.currentStatus || "Unknown").trim();
     statusCounts.set(s, (statusCounts.get(s) || 0) + 1);
   }
@@ -1035,7 +1070,7 @@ function Analytics({
   // Risk distribution — normalize, and ALWAYS include High/Medium/Low buckets (Unknown only if present)
   // Risk distribution — High / Medium / Low only
   const riskBuckets = { high: 0, medium: 0, low: 0, unknown: 0 };
-  for (const i of auditIssues) {
+  for (const i of chartIssues) {
     riskBuckets[normalizeRisk(i.riskLevel)]++;
   }
   const riskData = [
@@ -1044,31 +1079,20 @@ function Analytics({
     { name: "Low", value: riskBuckets.low },
   ];
 
-  // Process distribution: top 12 + "Others"
+  // Process distribution: top 12, with no synthetic "Others" bucket.
   const processCounts = new Map<string, number>();
-  for (const i of auditIssues) {
+  for (const i of chartIssues) {
     const p = (i.process || "—").trim();
     processCounts.set(p, (processCounts.get(p) || 0) + 1);
   }
   const processSorted = Array.from(processCounts.entries())
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value);
-  const processTop = processSorted.slice(0, 12);
-  const processRest = processSorted.slice(12);
-  const processOthers =
-    processRest.length > 0
-      ? [
-          {
-            name: "Others",
-            value: processRest.reduce((s, x) => s + x.value, 0),
-          },
-        ]
-      : [];
-  const processData = [...processTop, ...processOthers];
+  const processData = processSorted.slice(0, 12);
 
-  // Entity distribution: split multi-entity fields, top 12 + "Others"
+  // Entity distribution: split multi-entity fields, top 12 only.
   const entityCounts = new Map<string, { name: string; value: number }>();
-  for (const issue of auditIssues) {
+  for (const issue of chartIssues) {
     const parts = splitList(issue.entityCovered);
     const seen = new Set<string>();
     for (const raw of parts) {
@@ -1083,20 +1107,14 @@ function Analytics({
   const entitySorted = Array.from(entityCounts.values()).sort(
     (a, b) => b.value - a.value
   );
-  const entityTop = entitySorted.slice(0, 12);
-  const entityRest = entitySorted.slice(12);
-  const entityOthers =
-    entityRest.length > 0
-      ? [{ name: "Others", value: entityRest.reduce((s, x) => s + x.value, 0) }]
-      : [];
-  const entityData = [...entityTop, ...entityOthers];
+  const entityData = entitySorted.slice(0, 12);
 
   // CXO performance: Closed/Accepted vs Open, aggregated across all emails in cxoResponsible
   const cxoAgg = new Map<
     string,
     { name: string; closed: number; open: number }
   >();
-  for (const i of auditIssues) {
+  for (const i of chartIssues) {
     const cxos = splitList(i.cxoResponsible);
     const closedEq = isClosedEquivalent(i);
     // count an issue once per listed CXO
@@ -1125,12 +1143,12 @@ function Analytics({
 
   // Fiscal year trend: Total vs Closed/Accepted per fiscalYear
   const fySet = Array.from(
-    new Set(auditIssues.map((i) => i.fiscalYear))
+    new Set(chartIssues.map((i) => i.fiscalYear))
   ).sort();
   const fiscalYearData = fySet.map((year) => ({
     year,
-    total: auditIssues.filter((i) => i.fiscalYear === year).length,
-    closed: auditIssues.filter(
+    total: chartIssues.filter((i) => i.fiscalYear === year).length,
+    closed: chartIssues.filter(
       (i) => i.fiscalYear === year && isClosedEquivalent(i)
     ).length,
   }));
@@ -1150,7 +1168,7 @@ function Analytics({
     "61–90": 0,
   };
 
-  for (const i of auditIssues) {
+  for (const i of chartIssues) {
     if (isClosedEquivalent(i)) continue;
     const d = getDueDate(i);
     if (!d) continue;
@@ -1186,6 +1204,48 @@ function Analytics({
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-gray-900">{title}</h2>
+      <Card>
+        <CardHeader>
+          <CardTitle>Chart Controls</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {allProcesses.map((process) => {
+              const hidden = hiddenProcesses.has(process);
+              return (
+                <label
+                  key={process}
+                  className={`inline-flex cursor-pointer items-center gap-2 rounded border px-3 py-2 text-sm ${
+                    hidden ? "bg-slate-50 text-slate-400" : "bg-white text-slate-800"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!hidden}
+                    onChange={() => {
+                      setHiddenProcesses((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(process)) next.delete(process);
+                        else next.add(process);
+                        return next;
+                      });
+                    }}
+                  />
+                  {process}
+                </label>
+              );
+            })}
+          </div>
+          {drilldown && (
+            <div className="flex items-center justify-between rounded border bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              <span>Drilldown: {drilldown.label}</span>
+              <Button variant="outline" size="sm" onClick={() => setDrilldown(null)}>
+                Clear drilldown
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -1270,6 +1330,12 @@ function Analytics({
               // Colors (tune to your palette)
               colors={["#10B981", "#3B82F6", "#F59E0B", "#EF4444", "#6B7280"]}
               innerRadiusPct={55}
+              onSelect={(status) =>
+                setDrilldown({
+                  label: `Status: ${status}`,
+                  predicate: (issue) => issue.currentStatus === status,
+                })
+              }
             />
           </ErrorBoundary>
 
@@ -1279,14 +1345,26 @@ function Analytics({
               data={riskData}
               colors={["#EF4444", "#F59E0B", "#10B981"]} // High, Medium, Low
               innerRadiusPct={55}
+              onSelect={(risk) =>
+                setDrilldown({
+                  label: `Risk: ${risk}`,
+                  predicate: (issue) => normalizeRisk(issue.riskLevel) === risk.toLowerCase(),
+                })
+              }
             />
           </ErrorBoundary>
 
-          <ErrorBoundary title="Issues by Process (Top 12)">
+          <ErrorBoundary title="Top 12 Issues by Process">
             <BarChartBox
-              title="Issues by Process (Top 12)"
+              title="Top 12 Issues by Process"
               data={processData}
               angleLabels
+              onSelect={(process) =>
+                setDrilldown({
+                  label: `Process: ${process}`,
+                  predicate: (issue) => issue.process === process,
+                })
+              }
             />
           </ErrorBoundary>
 
@@ -1304,11 +1382,17 @@ function Analytics({
             />
           </ErrorBoundary>
 
-          <ErrorBoundary title="Issues by Entity (Top 12)">
+          <ErrorBoundary title="Top 12 Issues by Entity">
             <BarChartBox
-              title="Issues by Entity (Top 12)"
+              title="Top 12 Issues by Entity"
               data={entityData}
               angleLabels
+              onSelect={(entity) =>
+                setDrilldown({
+                  label: `Entity: ${entity}`,
+                  predicate: (issue) => splitList(issue.entityCovered).includes(entity),
+                })
+              }
             />
           </ErrorBoundary>
 
@@ -1319,6 +1403,21 @@ function Analytics({
               innerRadiusPct={55} // donut
               // yellow → amber → orange → red
               colors={["#FDE047", "#F59E0B", "#F97316", "#EF4444"]}
+              onSelect={(bucket) =>
+                setDrilldown({
+                  label: `Overdue bucket: ${bucket}`,
+                  predicate: (issue) => {
+                    if (isClosedEquivalent(issue)) return false;
+                    const due = getDueDate(issue);
+                    if (!due || due >= today) return false;
+                    const late = daysBetween(today, due);
+                    if (bucket === "0–30") return late <= 30;
+                    if (bucket === "31–60") return late > 30 && late <= 60;
+                    if (bucket === "61–90") return late > 60 && late <= 90;
+                    return late > 90;
+                  },
+                })
+              }
             />
           </ErrorBoundary>
 
@@ -1326,13 +1425,27 @@ function Analytics({
             <BarChartBox
               title="Due in Next 30/60/90 Days"
               data={upcomingData}
+              onSelect={(bucket) =>
+                setDrilldown({
+                  label: `Due bucket: ${bucket}`,
+                  predicate: (issue) => {
+                    if (isClosedEquivalent(issue)) return false;
+                    const due = getDueDate(issue);
+                    if (!due || due < today) return false;
+                    const ahead = daysBetween(due, today);
+                    if (bucket === "≤30") return ahead <= 30;
+                    if (bucket === "31–60") return ahead > 30 && ahead <= 60;
+                    return ahead > 60 && ahead <= 90;
+                  },
+                })
+              }
             />
           </ErrorBoundary>
         </div>
       )}
 
       {/* Reports: Dynamic Table (always shows rows; includes fallback) */}
-      <ReportsTableSection issues={auditIssues} viewerEmail={viewerEmail} />
+      <ReportsTableSection issues={chartIssues} viewerEmail={viewerEmail} />
     </div>
   );
 }
@@ -1484,10 +1597,21 @@ function ReportsTableSection({
       const accepted = getAcceptedAt(i) || parseDateSmart((i as any).updatedAt);
       return {
         "S.No": i.serialNumber ?? idx + 1,
+        "Issue Link": `${window.location.origin}/auditor-dashboard?tab=audit-issues#issue-${(i as any).id || ""}`,
+        "Fiscal Year": i.fiscalYear || "",
         Process: i.process || "",
         Entity: i.entityCovered || "",
+        Observation: i.observation || "",
+        Recommendation: i.recommendation || "",
+        "Management Comment": i.managementComment || "",
+        "Action Required": i.actionRequired || "",
+        "Risk Level": i.riskLevel || "",
+        "Person Responsible": i.personResponsible || "",
+        Approver: i.approver || "",
+        "CXO Responsible": i.cxoResponsible || "",
         "Due Date": due ? due.toISOString().slice(0, 10) : "",
         Status: i.currentStatus || "",
+        "Evidence Status": (i as any).evidenceStatus || "",
         Aging: renderAging(i),
         "Accepted/Updated On": accepted
           ? accepted.toISOString().slice(0, 10)
@@ -1655,7 +1779,12 @@ function ReportsTableSection({
                   return (
                     <TableRow key={rowKey}>
                       <TableCell className="whitespace-nowrap">
-                        {i.serialNumber ?? idx + 1}
+                        <a
+                          className="text-blue-700 underline"
+                          href={`/auditor-dashboard?tab=audit-issues#issue-${(i as any).id}`}
+                        >
+                          {i.serialNumber ?? idx + 1}
+                        </a>
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
                         {i.process || "—"}

@@ -348,11 +348,7 @@ export const EditAuditModal: React.FC<Props> = ({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="To Be Received">To Be Received</SelectItem>
-                <SelectItem value="Partially Received">
-                  Partially Received
-                </SelectItem>
                 <SelectItem value="Received">Received</SelectItem>
-                <SelectItem value="Closed">Closed</SelectItem>
               </SelectContent>
             </Select>
           </div>

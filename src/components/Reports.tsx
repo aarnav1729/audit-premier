@@ -85,7 +85,7 @@ export const Reports: React.FC<{ viewerEmail: string }> = ({ viewerEmail }) => {
             SUMMARY OF ACTION TAKEN STATUS
           </div>
           <div className="text-sm text-gray-600">
-            Generated: {new Date(actionTaken?.generatedAt || Date.now()).toLocaleString()}
+            Generated: {new Date(actionTaken?.generatedAt || Date.now()).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
           </div>
         </div>
         <Button variant="outline" onClick={load}>Refresh</Button>

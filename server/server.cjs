@@ -1269,7 +1269,7 @@ const AUDITOR_EMAILS = String(process.env.AUDITOR_EMAILS || "")
 
 const STATIC_AUDITORS = [
   "santosh.kumar@protivitiglobal.in",
-  "borra.prasanna@protivitiglobal.in",
+  "radheshyam.p@protivitiglobal.in",
   "aman.shah@protivitiglobal.in",
   "aarnavsingh836@gmail.com",
 ];
